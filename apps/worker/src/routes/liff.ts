@@ -18,6 +18,7 @@ import {
   jstNow,
 } from '@line-crm/db';
 import { buildIntroMessage } from '../services/intro-message.js';
+import { syncHubSpotFriend } from '../services/hubspot.js';
 import type { Env } from '../index.js';
 
 const liffRoutes = new Hono<Env>();
@@ -678,6 +679,18 @@ liffRoutes.get('/auth/callback', async (c) => {
       statusMessage: null,
     });
 
+    let resolvedLineAccountId: string | null = null;
+    if (accountParam) {
+      const account = await getLineAccountByChannelId(db, accountParam);
+      resolvedLineAccountId = account?.id ?? null;
+      if (resolvedLineAccountId) {
+        await db
+          .prepare('UPDATE friends SET line_account_id = ?, updated_at = ? WHERE id = ?')
+          .bind(resolvedLineAccountId, jstNow(), friend.id)
+          .run();
+      }
+    }
+
     // IG cross-platform UUID linkage (OAuth path — new friends & returning users
     // going through /auth/callback). Existing friends who bypass OAuth hit the
     // same helper from /api/liff/link and /api/liff/send-form-link.
@@ -770,6 +783,12 @@ liffRoutes.get('/auth/callback', async (c) => {
         .bind(JSON.stringify(merged), jstNow(), friend.id)
         .run();
     }
+
+    await syncHubSpotFriend(
+      c.env,
+      { ...friend, line_account_id: resolvedLineAccountId ?? friend.line_account_id },
+      { ref: ref && !ref.startsWith('xh:') ? ref : null, lineAccountId: resolvedLineAccountId },
+    );
 
     // X Harness token resolution: ref starting with "xh:" links X account to LINE friend
     if (ref && ref.startsWith('xh:')) {

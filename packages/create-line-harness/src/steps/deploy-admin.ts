@@ -99,6 +99,7 @@ export async function deployAdmin(
   // Deploy to CF Pages — hand TTY over to wrangler
   p.log.info("Admin UI をデプロイしています（wrangler の出力が表示されます）...");
   try {
+    const commitMessage = `line-harness admin deploy ${productionBranch}`;
     await wrangler(
       [
         "pages",
@@ -108,6 +109,8 @@ export async function deployAdmin(
         options.projectName,
         "--branch",
         productionBranch,
+        "--commit-message",
+        commitMessage,
         "--commit-dirty=true",
       ],
       { cwd: webDir, tty: true },

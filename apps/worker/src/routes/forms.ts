@@ -12,6 +12,7 @@ import {
 import { getFriendByLineUserId, getFriendById } from '@line-crm/db';
 import { addTagToFriend, enrollFriendInScenario } from '@line-crm/db';
 import type { Form as DbForm, FormSubmission as DbFormSubmission } from '@line-crm/db';
+import { syncHubSpotFormSubmission } from '../services/hubspot.js';
 import type { Env } from '../index.js';
 
 const forms = new Hono<Env>();
@@ -428,6 +429,18 @@ forms.post('/api/forms/:id/submit', async (c) => {
       if (form.on_submit_scenario_id) {
         sideEffects.push(enrollFriendInScenario(db, friendId, form.on_submit_scenario_id));
       }
+
+      sideEffects.push(
+        (async () => {
+          const friend = await getFriendById(db, friendId!);
+          if (!friend) return;
+          await syncHubSpotFormSubmission(c.env, friend, {
+            formId,
+            data: submissionData,
+            submittedAt: now,
+          });
+        })(),
+      );
 
       // If webhook returned a join_url (e.g. Meet Harness), send a Flex button to the user
       if (webhookData?.join_url) {

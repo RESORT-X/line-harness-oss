@@ -16,6 +16,7 @@ import {
 } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
+import { syncHubSpotFriend } from '../services/hubspot.js';
 import type { Env } from '../index.js';
 
 const webhook = new Hono<Env>();
@@ -66,7 +67,7 @@ webhook.post('/webhook', async (c) => {
   const processingPromise = (async () => {
     for (const event of body.events) {
       try {
-        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin);
+        await handleEvent(c.env, db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin);
       } catch (err) {
         console.error('Error handling webhook event:', err);
       }
@@ -79,6 +80,7 @@ webhook.post('/webhook', async (c) => {
 });
 
 async function handleEvent(
+  env: Env['Bindings'],
   db: D1Database,
   lineClient: LineClient,
   event: WebhookEvent,
@@ -118,6 +120,12 @@ async function handleEvent(
         .bind(lineAccountId, jstNow(), friend.id).run();
       console.log(`[follow] line_account_id set to ${lineAccountId} for friend ${friend.id}`);
     }
+
+    await syncHubSpotFriend(
+      env,
+      { ...friend, line_account_id: lineAccountId ?? friend.line_account_id },
+      { lineAccountId },
+    );
 
     // friend_add シナリオに登録（このアカウントのシナリオのみ）
     const scenarios = await getScenarios(db);

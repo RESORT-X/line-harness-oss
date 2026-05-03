@@ -64,6 +64,8 @@ export type Env = {
     X_HARNESS_URL?: string;  // Optional: X Harness API URL for account linking
     IG_HARNESS_URL?: string;  // Optional: IG Harness API URL for cross-platform linking
     IG_HARNESS_LINK_SECRET?: string;  // Shared secret for IG Harness link-line webhook
+    HUBSPOT_PRIVATE_APP_TOKEN?: string;  // Optional: HubSpot Private App token
+    HUBSPOT_CONTACT_UNIQUE_PROPERTY?: string;  // Optional: defaults to line_harness_friend_id
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
