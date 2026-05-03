@@ -17,6 +17,7 @@ import {
 import { fireEvent } from '../services/event-bus.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
 import { syncHubSpotFriend } from '../services/hubspot.js';
+import { sendScenarioCompletionForm } from '../services/scenario-completion-form.js';
 import type { Env } from '../index.js';
 
 const webhook = new Hono<Env>();
@@ -177,6 +178,7 @@ async function handleEvent(
                   await advanceFriendScenario(db, friendScenario.id, firstStep.step_order, nextDeliveryDate.toISOString().slice(0, -1) + '+09:00');
                 } else {
                   await completeFriendScenario(db, friendScenario.id);
+                  await sendScenarioCompletionForm(db, env, friend.id, scenario.id);
                 }
               } catch (err) {
                 console.error('Failed immediate delivery for scenario', scenario.id, err);

@@ -126,6 +126,7 @@ export default function FriendAddSettingsPage() {
         triggerTagId: null,
         isActive: false,
         lineAccountId: accountId,
+        onCompletionFormId: null,
       })
       if (!res.success) {
         setError(`シナリオ作成に失敗しました: ${res.error}`)

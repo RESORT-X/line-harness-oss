@@ -13,6 +13,15 @@ interface FriendTableProps {
   onRefresh: () => void
 }
 
+function getFriendMetadata(friend: FriendWithTags): Record<string, unknown> {
+  return ((friend as unknown as { metadata?: Record<string, unknown> }).metadata) || {}
+}
+
+function getRealName(friend: FriendWithTags): string {
+  const value = getFriendMetadata(friend).real_name
+  return typeof value === 'string' && value.trim() ? value.trim() : ''
+}
+
 export default function FriendTable({ friends, allTags, onRefresh }: FriendTableProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [addingTagForFriend, setAddingTagForFriend] = useState<string | null>(null)
@@ -105,6 +114,7 @@ export default function FriendTable({ friends, allTags, onRefresh }: FriendTable
             const availableTags = allTags.filter(
               (t) => !friend.tags.some((ft) => ft.id === t.id)
             )
+            const realName = getRealName(friend)
 
             return (
               <>
@@ -128,7 +138,10 @@ export default function FriendTable({ friends, allTags, onRefresh }: FriendTable
                         </div>
                       )}
                       <div>
-                        <p className="text-sm font-medium text-gray-900">{friend.displayName}</p>
+                        <p className="text-sm font-medium text-gray-900">
+                          {friend.displayName}
+                          {realName && <span className="ml-1 text-xs font-semibold text-gray-500">（{realName}）</span>}
+                        </p>
                         {friend.statusMessage && (
                           <p className="text-xs text-gray-400 truncate max-w-[160px]">{friend.statusMessage}</p>
                         )}

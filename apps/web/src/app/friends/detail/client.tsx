@@ -35,6 +35,27 @@ interface MessageLog {
   createdAt: string
 }
 
+interface FormForMetadataLabels {
+  id: string
+  fields: Array<{
+    name?: string
+    label?: string
+  }>
+}
+
+interface LeadFormSubmissionField {
+  key?: string
+  label?: string
+  value?: unknown
+}
+
+interface LeadFormSubmission {
+  source?: string
+  submittedAt?: string
+  fullName?: string
+  fields?: LeadFormSubmissionField[]
+}
+
 type TabKey = 'profile' | 'history'
 
 const TAG_COLORS = ['#06C755', '#3B82F6', '#8B5CF6', '#F59E0B', '#EF4444', '#10B981', '#EC4899', '#14B8A6']
@@ -44,6 +65,21 @@ const messageTypeLabels: Record<string, string> = {
   image: '画像',
   flex: 'Flex',
 }
+
+const fallbackMetadataLabels: Record<string, string> = {
+  interest_level: '検討状況',
+  preferred_contact_time: '希望連絡時間',
+  questions: '相談内容',
+  phone: '電話番号',
+  email: 'メールアドレス',
+  line_ref: '流入元',
+  line_latest_form_id: '最新フォームID',
+  line_latest_form_submitted_at: '最新フォーム回答日時',
+  line_latest_form_answers_json: '最新フォーム回答内容',
+  lp_form_submission: 'フォーム入力項目',
+}
+
+const hiddenMetadataKeys = new Set(['real_name', 'lp_form_submission_text'])
 
 function formatDateTime(iso?: string | null) {
   if (!iso) return '-'
@@ -60,13 +96,125 @@ function formatDateTime(iso?: string | null) {
 
 function formatMetadataValue(value: unknown) {
   if (value === null || value === undefined) return ''
-  if (typeof value === 'string') return value
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => (item === null || item === undefined ? '' : String(item)))
+      .filter(Boolean)
+      .join('、')
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(trimmed)
+        if (Array.isArray(parsed)) return formatMetadataValue(parsed)
+      } catch {
+        // 文字列として表示する。
+      }
+    }
+    return value
+  }
   if (typeof value === 'number' || typeof value === 'boolean') return String(value)
   try {
     return JSON.stringify(value)
   } catch {
     return String(value)
   }
+}
+
+function formatMetadataLabel(key: string, labels: Record<string, string>) {
+  return labels[key] || fallbackMetadataLabels[key] || key
+}
+
+function getRealName(metadata?: Record<string, unknown> | null) {
+  const value = metadata?.real_name
+  return typeof value === 'string' && value.trim() ? value.trim() : ''
+}
+
+function isLeadFormSubmission(value: unknown): value is LeadFormSubmission {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    Array.isArray((value as LeadFormSubmission).fields),
+  )
+}
+
+function normalizeLeadFields(value: LeadFormSubmission) {
+  return (value.fields || [])
+    .map((field) => {
+      const label = typeof field.label === 'string' ? field.label.trim() : ''
+      const key = typeof field.key === 'string' ? field.key.trim() : ''
+      const formattedValue = formatMetadataValue(field.value).trim()
+      if (!formattedValue) return null
+      return {
+        key,
+        label: label || key || '項目',
+        value: formattedValue,
+      }
+    })
+    .filter((field): field is { key: string; label: string; value: string } => Boolean(field))
+}
+
+function MetadataValue({ value }: { value: unknown }) {
+  const [expanded, setExpanded] = useState(false)
+
+  if (isLeadFormSubmission(value)) {
+    const fields = normalizeLeadFields(value)
+    const totalLength = fields.reduce((sum, field) => sum + field.label.length + field.value.length, 0)
+    const shouldCollapse = fields.length > 6 || totalLength > 420
+    const visibleFields = shouldCollapse && !expanded ? fields.slice(0, 6) : fields
+
+    return (
+      <div className="mt-2">
+        {(value.source || value.submittedAt) && (
+          <p className="mb-3 text-xs text-gray-400">
+            {[value.source, value.submittedAt ? formatDateTime(value.submittedAt) : ''].filter(Boolean).join(' / ')}
+          </p>
+        )}
+        <div className="space-y-2">
+          {visibleFields.map((field, index) => (
+            <div key={`${field.key || field.label}-${index}`} className="rounded-md bg-white border border-gray-100 px-3 py-2">
+              <p className="text-xs font-medium text-gray-500">{field.label}</p>
+              <p className="mt-1 text-sm text-gray-900 whitespace-pre-wrap break-words">{field.value}</p>
+            </div>
+          ))}
+        </div>
+        {shouldCollapse && (
+          <button
+            type="button"
+            onClick={() => setExpanded((current) => !current)}
+            className="mt-3 text-xs font-medium text-green-700 hover:text-green-800"
+          >
+            {expanded ? '閉じる' : `すべて見る（${fields.length}項目）`}
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  const text = formatMetadataValue(value)
+  const lines = text.split(/\r?\n/)
+  const shouldCollapse = text.length > 220 || lines.length > 6
+  const visibleText = !shouldCollapse || expanded
+    ? text
+    : lines.length > 6
+      ? `${lines.slice(0, 6).join('\n')}\n...`
+      : `${text.slice(0, 220)}...`
+
+  return (
+    <>
+      <p className="mt-1 text-sm text-gray-900 whitespace-pre-wrap break-words">{visibleText}</p>
+      {shouldCollapse && (
+        <button
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
+          className="mt-2 text-xs font-medium text-green-700 hover:text-green-800"
+        >
+          {expanded ? '閉じる' : 'すべて見る'}
+        </button>
+      )}
+    </>
+  )
 }
 
 function collectFlexText(value: unknown, texts: string[]) {
@@ -114,6 +262,7 @@ export default function FriendDetail({ friendId }: { friendId: string }) {
 
   const [metadataKey, setMetadataKey] = useState('')
   const [metadataValue, setMetadataValue] = useState('')
+  const [metadataLabels, setMetadataLabels] = useState<Record<string, string>>({})
   const [metadataSaving, setMetadataSaving] = useState(false)
   const [metadataError, setMetadataError] = useState('')
 
@@ -152,6 +301,24 @@ export default function FriendDetail({ friendId }: { friendId: string }) {
     }
   }, [])
 
+  const loadFormLabels = useCallback(async () => {
+    try {
+      const res = await fetchApi<ApiResult<FormForMetadataLabels[]>>('/api/forms')
+      if (!res.success) return
+      const labels: Record<string, string> = {}
+      for (const form of res.data) {
+        for (const field of form.fields || []) {
+          const name = field.name?.trim()
+          const label = field.label?.trim()
+          if (name && label) labels[name] = label
+        }
+      }
+      setMetadataLabels(labels)
+    } catch {
+      // フォームラベルは表示補助なので、友だち詳細の表示自体は止めない。
+    }
+  }, [])
+
   const loadMessages = useCallback(async () => {
     if (!friendId) return
     setLoadingMessages(true)
@@ -173,7 +340,8 @@ export default function FriendDetail({ friendId }: { friendId: string }) {
   useEffect(() => {
     loadFriend()
     loadTags()
-  }, [loadFriend, loadTags])
+    loadFormLabels()
+  }, [loadFriend, loadTags, loadFormLabels])
 
   useEffect(() => {
     if (activeTab === 'history') loadMessages()
@@ -185,8 +353,12 @@ export default function FriendDetail({ friendId }: { friendId: string }) {
   }, [allTags, friend])
 
   const metadataEntries = useMemo(() => {
-    return Object.entries(friend?.metadata || {}).filter(([, value]) => value !== null && value !== undefined)
+    return Object.entries(friend?.metadata || {}).filter(([key, value]) => {
+      return !hiddenMetadataKeys.has(key) && value !== null && value !== undefined
+    })
   }, [friend])
+
+  const realName = useMemo(() => getRealName(friend?.metadata), [friend])
 
   const addExistingTag = async () => {
     if (!selectedTagId || !friend) return
@@ -353,7 +525,10 @@ export default function FriendDetail({ friendId }: { friendId: string }) {
               </div>
             )}
             <div className="min-w-0">
-              <h1 className="text-lg font-bold text-gray-900 truncate">{friend.displayName || '名前なし'}</h1>
+              <h1 className="text-lg font-bold text-gray-900 truncate">
+                {friend.displayName || '名前なし'}
+                {realName && <span className="ml-1 text-sm font-semibold text-gray-500">（{realName}）</span>}
+              </h1>
               {friend.statusMessage && (
                 <p className="mt-0.5 text-sm text-gray-500 truncate">{friend.statusMessage}</p>
               )}
@@ -499,8 +674,10 @@ export default function FriendDetail({ friendId }: { friendId: string }) {
                   <div key={key} className="rounded-lg bg-gray-50 border border-gray-100 px-3 py-2">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="text-xs font-medium text-gray-500 break-all">{key}</p>
-                        <p className="mt-1 text-sm text-gray-900 break-words">{formatMetadataValue(value)}</p>
+                        <p className="text-xs font-medium text-gray-500 break-all" title={key}>
+                          {formatMetadataLabel(key, metadataLabels)}
+                        </p>
+                        <MetadataValue value={value} />
                       </div>
                       <button
                         type="button"

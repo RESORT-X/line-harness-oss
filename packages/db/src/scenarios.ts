@@ -10,6 +10,7 @@ export interface Scenario {
   trigger_type: ScenarioTriggerType;
   trigger_tag_id: string | null;
   line_account_id: string | null;
+  on_completion_form_id: string | null;
   is_active: number;
   created_at: string;
   updated_at: string;
@@ -120,7 +121,7 @@ export async function createScenario(
 }
 
 export type UpdateScenarioInput = Partial<
-  Pick<Scenario, 'name' | 'description' | 'trigger_type' | 'trigger_tag_id' | 'is_active'>
+  Pick<Scenario, 'name' | 'description' | 'trigger_type' | 'trigger_tag_id' | 'on_completion_form_id' | 'is_active'>
 >;
 
 export async function updateScenario(
@@ -147,6 +148,10 @@ export async function updateScenario(
   if (updates.trigger_tag_id !== undefined) {
     fields.push('trigger_tag_id = ?');
     values.push(updates.trigger_tag_id);
+  }
+  if (updates.on_completion_form_id !== undefined) {
+    fields.push('on_completion_form_id = ?');
+    values.push(updates.on_completion_form_id);
   }
   if (updates.is_active !== undefined) {
     fields.push('is_active = ?');
