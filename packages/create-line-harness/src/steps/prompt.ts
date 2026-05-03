@@ -5,6 +5,7 @@ interface LineCredentials {
   lineChannelAccessToken: string;
   lineChannelSecret: string;
   lineLoginChannelId: string;
+  lineLoginChannelSecret: string;
 }
 
 export async function promptLineCredentials(): Promise<LineCredentials> {
@@ -119,10 +120,37 @@ export async function promptLineCredentials(): Promise<LineCredentials> {
     process.exit(0);
   }
 
+  // Step 3-2: LINE Login Channel Secret
+  p.log.message(
+    [
+      "■ Step 3-2. チャネルシークレット取得",
+      "→ LINE Login チャネル",
+      "→ 基本情報設定",
+      "→ チャネルシークレット",
+      "",
+      "LINEログインの認可コードをアクセストークンへ交換するために必要です。",
+    ].join("\n"),
+  );
+
+  const lineLoginChannelSecret = await p.text({
+    message: "LINE Login チャネルシークレット",
+    placeholder: "LINE Login チャネルの Channel Secret",
+    validate(value) {
+      if (!value || value.trim().length < 10) {
+        return "LINE Login チャネルシークレットを入力してください";
+      }
+    },
+  });
+  if (p.isCancel(lineLoginChannelSecret)) {
+    p.cancel("セットアップをキャンセルしました");
+    process.exit(0);
+  }
+
   return {
     lineChannelId: (lineChannelId as string).trim(),
     lineChannelAccessToken: (lineChannelAccessToken as string).trim(),
     lineChannelSecret: (lineChannelSecret as string).trim(),
     lineLoginChannelId: (lineLoginChannelId as string).trim(),
+    lineLoginChannelSecret: (lineLoginChannelSecret as string).trim(),
   };
 }

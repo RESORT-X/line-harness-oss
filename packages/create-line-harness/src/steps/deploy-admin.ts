@@ -9,6 +9,7 @@ interface DeployAdminOptions {
   workerUrl: string;
   apiKey?: string; // Deprecated: no longer embedded in client bundle
   projectName: string;
+  productionBranch?: string;
 }
 
 interface DeployAdminResult {
@@ -19,6 +20,7 @@ export async function deployAdmin(
   options: DeployAdminOptions,
 ): Promise<DeployAdminResult> {
   const webDir = join(options.repoDir, "apps/web");
+  const productionBranch = options.productionBranch || "main";
 
   // Write .env.production with the Worker URL and API key
   const buildSpinner = p.spinner();
@@ -40,7 +42,14 @@ export async function deployAdmin(
   const projectSpinner = p.spinner();
   projectSpinner.start("Pages プロジェクト準備中...");
   try {
-    await wrangler(["pages", "project", "create", options.projectName, "--production-branch", "main"]);
+    await wrangler([
+      "pages",
+      "project",
+      "create",
+      options.projectName,
+      "--production-branch",
+      productionBranch,
+    ]);
   } catch {
     // Already exists, that's fine
   }
@@ -50,7 +59,16 @@ export async function deployAdmin(
   p.log.info("Admin UI をデプロイしています（wrangler の出力が表示されます）...");
   try {
     await wrangler(
-      ["pages", "deploy", "out", "--project-name", options.projectName, "--commit-dirty=true"],
+      [
+        "pages",
+        "deploy",
+        "out",
+        "--project-name",
+        options.projectName,
+        "--branch",
+        productionBranch,
+        "--commit-dirty=true",
+      ],
       { cwd: webDir, tty: true },
     );
 

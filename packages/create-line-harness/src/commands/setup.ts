@@ -11,6 +11,7 @@ import { deployAdmin } from "../steps/deploy-admin.js";
 import { setSecrets } from "../steps/secrets.js";
 import { generateMcpConfig } from "../steps/mcp-config.js";
 import { generateApiKey } from "../lib/crypto.js";
+import { DEFAULT_ENV, envLabel, envSuffix } from "../lib/env.js";
 import {
   getAccountIds,
   setAccountId,
@@ -20,11 +21,13 @@ import {
 } from "../lib/wrangler.js";
 
 interface SetupState {
+  envName?: string;
   projectName?: string;
   lineChannelId?: string;
   lineChannelAccessToken?: string;
   lineChannelSecret?: string;
   lineLoginChannelId?: string;
+  lineLoginChannelSecret?: string;
   liffId?: string;
   apiKey?: string;
   d1DatabaseId?: string;
@@ -49,24 +52,32 @@ const ACCOUNT_DEPENDENT_STEPS = [
   "admin",
 ];
 
-function getStatePath(repoDir: string): string {
-  return join(repoDir, ".line-harness-setup.json");
+function getStatePath(repoDir: string, envName: string): string {
+  return join(repoDir, `.line-harness-setup${envSuffix(envName)}.json`);
 }
 
-function loadState(repoDir: string): SetupState {
-  const path = getStatePath(repoDir);
+function getConfigPath(repoDir: string, envName: string): string {
+  return join(repoDir, `.line-harness-config${envSuffix(envName)}.json`);
+}
+
+function loadState(repoDir: string, envName: string): SetupState {
+  const path = getStatePath(repoDir, envName);
   if (existsSync(path)) {
     try {
-      return JSON.parse(readFileSync(path, "utf-8"));
+      const state = JSON.parse(readFileSync(path, "utf-8")) as SetupState;
+      state.envName = state.envName || envName;
+      state.completedSteps = state.completedSteps || [];
+      return state;
     } catch {
       // corrupt file, start fresh
     }
   }
-  return { completedSteps: [] };
+  return { envName, completedSteps: [] };
 }
 
-function saveState(repoDir: string, state: SetupState): void {
-  writeFileSync(getStatePath(repoDir), JSON.stringify(state, null, 2) + "\n");
+function saveState(repoDir: string, envName: string, state: SetupState): void {
+  state.envName = envName;
+  writeFileSync(getStatePath(repoDir, envName), JSON.stringify(state, null, 2) + "\n");
 }
 
 function isDone(state: SetupState, step: string): boolean {
@@ -104,6 +115,18 @@ function describeAccount(
   return match ? `${match.name} (${id})` : id;
 }
 
+function defaultProjectName(envName: string): string {
+  return envName === DEFAULT_ENV ? "line-harness" : `line-harness-${envName}`;
+}
+
+function productionBranchForEnv(envName: string): string {
+  return envName === "prd" ? "production" : "main";
+}
+
+function sqlString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
 /**
  * Verify that the previously-saved accountId still belongs to the currently
  * authenticated wrangler session. If not, prompt the user to either switch
@@ -112,6 +135,7 @@ function describeAccount(
 async function verifyAccount(
   state: SetupState,
   repoDir: string,
+  envName: string,
 ): Promise<void> {
   const accounts = await getAccountIds();
   if (accounts.length === 0) {
@@ -162,7 +186,7 @@ async function verifyAccount(
     }
     if (choice === "reset") {
       resetAccountBoundState(state);
-      saveState(repoDir, state);
+      saveState(repoDir, envName, state);
       p.log.success("アカウント依存ステップをリセットしました。");
     }
     return;
@@ -206,14 +230,14 @@ async function verifyAccount(
 
   resetAccountBoundState(state);
   state.accountId = undefined;
-  saveState(repoDir, state);
+  saveState(repoDir, envName, state);
   p.log.success("アカウント依存ステップをリセットしました。新しいアカウントで再構築します。");
 }
 
-export async function runSetup(repoDir: string): Promise<void> {
-  p.intro(pc.bgCyan(pc.black(" LINE Harness セットアップ ")));
+export async function runSetup(repoDir: string, envName = DEFAULT_ENV): Promise<void> {
+  p.intro(pc.bgCyan(pc.black(` LINE Harness セットアップ: ${envLabel(envName)} `)));
 
-  const state = loadState(repoDir);
+  const state = loadState(repoDir, envName);
 
   if (state.completedSteps.length > 0) {
     p.log.info(
@@ -222,7 +246,7 @@ export async function runSetup(repoDir: string): Promise<void> {
   }
 
   try {
-    await runSetupInner(state, repoDir);
+    await runSetupInner(state, repoDir, envName);
   } catch (error) {
     if (error instanceof WranglerError) {
       const help = error.getHelp();
@@ -243,6 +267,7 @@ export async function runSetup(repoDir: string): Promise<void> {
 async function runSetupInner(
   state: SetupState,
   repoDir: string,
+  envName: string,
 ): Promise<void> {
   // Step 1: Check dependencies
   await checkDeps();
@@ -251,13 +276,13 @@ async function runSetupInner(
   await ensureAuth();
 
   // Step 2.4: If we have a saved accountId, make sure it still belongs to the current wrangler session
-  await verifyAccount(state, repoDir);
+  await verifyAccount(state, repoDir, envName);
 
   // Step 2.5: Get account ID (only if not set or just reset by verifyAccount)
   if (!state.accountId) {
     const accountId = await getAccountId();
     state.accountId = accountId;
-    saveState(repoDir, state);
+    saveState(repoDir, envName, state);
     p.log.success(`Cloudflare アカウント: ${accountId}`);
   }
   // Pin all wrangler commands to this account
@@ -285,15 +310,16 @@ async function runSetupInner(
       defaultValue: "done",
     });
     markDone(state, "r2billing");
-    saveState(repoDir, state);
+    saveState(repoDir, envName, state);
   }
 
   // Get project name (used for Worker + D1 naming)
   if (!state.projectName) {
+    const projectDefault = defaultProjectName(envName);
     const projectName = await p.text({
-      message: "プロジェクト名（Worker と D1 の名前に使われます）",
-      placeholder: "line-harness",
-      defaultValue: "line-harness",
+      message: `プロジェクト名（${envLabel(envName)} の Worker/D1/R2/Pages 名に使われます）`,
+      placeholder: projectDefault,
+      defaultValue: projectDefault,
       validate(value) {
         if (!value) return undefined; // use default
         if (!/^[a-z0-9][a-z0-9-]*$/.test(value)) {
@@ -305,21 +331,22 @@ async function runSetupInner(
       p.cancel("セットアップをキャンセルしました");
       process.exit(0);
     }
-    state.projectName = (projectName as string).trim() || "line-harness";
-    saveState(repoDir, state);
+    state.projectName = (projectName as string).trim() || projectDefault;
+    saveState(repoDir, envName, state);
   } else {
     p.log.success(`プロジェクト名: ${state.projectName}`);
   }
 
   // Step 4: Get LINE credentials (skip if already saved)
-  if (!isDone(state, "credentials")) {
+  if (!isDone(state, "credentials") || !state.lineLoginChannelSecret) {
     const credentials = await promptLineCredentials();
     state.lineChannelId = credentials.lineChannelId;
     state.lineChannelAccessToken = credentials.lineChannelAccessToken;
     state.lineChannelSecret = credentials.lineChannelSecret;
     state.lineLoginChannelId = credentials.lineLoginChannelId;
+    state.lineLoginChannelSecret = credentials.lineLoginChannelSecret;
     markDone(state, "credentials");
-    saveState(repoDir, state);
+    saveState(repoDir, envName, state);
   } else {
     p.log.success("LINE チャネル情報: 入力済み（スキップ）");
   }
@@ -328,7 +355,7 @@ async function runSetupInner(
   if (!isDone(state, "liffId")) {
     p.log.message(
       [
-        "■ Step 3-2. LIFF ID 取得",
+        "■ Step 3-3. LIFF ID 取得",
         "",
         "https://developers.line.biz/console/ にアクセス",
         "→ Step 2 で設定したプロバイダーを選択",
@@ -361,7 +388,7 @@ async function runSetupInner(
     }
     state.liffId = (liffId as string).trim();
     markDone(state, "liffId");
-    saveState(repoDir, state);
+    saveState(repoDir, envName, state);
   } else {
     p.log.success(`LIFF ID: 入力済み（${state.liffId}）`);
   }
@@ -369,7 +396,7 @@ async function runSetupInner(
   // Step 6: Generate API key (skip if already generated)
   if (!state.apiKey) {
     state.apiKey = generateApiKey();
-    saveState(repoDir, state);
+    saveState(repoDir, envName, state);
   }
 
   // Step 7: Create D1 database + run migrations
@@ -378,7 +405,7 @@ async function runSetupInner(
     state.d1DatabaseId = databaseId;
     state.d1DatabaseName = databaseName;
     markDone(state, "database");
-    saveState(repoDir, state);
+    saveState(repoDir, envName, state);
   } else {
     p.log.success(`D1 データベース: 作成済み（${state.d1DatabaseId}）`);
   }
@@ -400,7 +427,7 @@ async function runSetupInner(
     }
     state.r2BucketName = r2BucketName;
     markDone(state, "r2");
-    saveState(repoDir, state);
+    saveState(repoDir, envName, state);
   } else {
     p.log.success(`R2 バケット: 作成済み（${state.r2BucketName}）`);
   }
@@ -415,7 +442,7 @@ async function runSetupInner(
         const bot = (await botRes.json()) as { basicId?: string };
         if (bot.basicId) {
           state.botBasicId = bot.basicId;
-          saveState(repoDir, state);
+          saveState(repoDir, envName, state);
           p.log.success(`Bot Basic ID: ${state.botBasicId}`);
         }
       }
@@ -439,7 +466,7 @@ async function runSetupInner(
     });
     state.workerUrl = workerUrl;
     markDone(state, "worker");
-    saveState(repoDir, state);
+    saveState(repoDir, envName, state);
   } else {
     p.log.success(`Worker: デプロイ済み（${state.workerUrl}）`);
   }
@@ -451,11 +478,12 @@ async function runSetupInner(
       lineChannelAccessToken: state.lineChannelAccessToken!,
       lineChannelSecret: state.lineChannelSecret!,
       lineLoginChannelId: state.lineLoginChannelId!,
+      lineLoginChannelSecret: state.lineLoginChannelSecret!,
       liffId: state.liffId!,
       apiKey: state.apiKey!,
     });
     markDone(state, "secrets");
-    saveState(repoDir, state);
+    saveState(repoDir, envName, state);
   } else {
     p.log.success("シークレット: 設定済み");
   }
@@ -479,7 +507,7 @@ async function runSetupInner(
         }),
       });
       if (res.ok) {
-        // Set login_channel_id (not supported by API, update DB directly)
+        // Set LINE Login/LIFF fields not supported by the public account API.
         try {
           await wrangler([
             "d1",
@@ -487,7 +515,13 @@ async function runSetupInner(
             state.d1DatabaseName!,
             "--remote",
             "--command",
-            `UPDATE line_accounts SET login_channel_id = '${state.lineLoginChannelId}' WHERE channel_id = '${state.lineChannelId}'`,
+            [
+              "UPDATE line_accounts SET",
+              `login_channel_id = ${sqlString(state.lineLoginChannelId!)},`,
+              `login_channel_secret = ${sqlString(state.lineLoginChannelSecret!)},`,
+              `liff_id = ${sqlString(state.liffId!)}`,
+              `WHERE channel_id = ${sqlString(state.lineChannelId!)}`,
+            ].join(" "),
           ]);
         } catch {
           // Non-critical
@@ -501,7 +535,7 @@ async function runSetupInner(
       s.stop("LINE アカウント登録スキップ（Worker 起動待ち）");
     }
     markDone(state, "lineAccount");
-    saveState(repoDir, state);
+    saveState(repoDir, envName, state);
   } else {
     p.log.success("LINE アカウント: 登録済み");
   }
@@ -516,10 +550,11 @@ async function runSetupInner(
       workerUrl: state.workerUrl!,
       apiKey: state.apiKey!,
       projectName: adminProjectName,
+      productionBranch: productionBranchForEnv(envName),
     });
     state.adminUrl = adminUrl;
     markDone(state, "admin");
-    saveState(repoDir, state);
+    saveState(repoDir, envName, state);
   } else {
     p.log.success(`Admin UI: デプロイ済み（${state.adminUrl}）`);
   }
@@ -564,6 +599,11 @@ async function runSetupInner(
       `${pc.bold("⑥ 管理画面:")}`,
       `   ${pc.cyan(state.adminUrl!)}`,
       "",
+      `${pc.bold("⑦ 今後のデプロイ設定:")}`,
+      `   env: ${pc.cyan(envLabel(envName))}`,
+      `   branch: ${pc.cyan(productionBranchForEnv(envName))}`,
+      `   config: ${pc.cyan(getConfigPath(repoDir, envName))}`,
+      "",
       `${pc.bold("API Key:")}`,
       `   ${pc.dim(state.apiKey!)}`,
       `   → この値は再表示できません。安全な場所に保存してください`,
@@ -572,11 +612,12 @@ async function runSetupInner(
   );
 
   // Save config for future updates (separate from setup state)
-  const configPath = join(repoDir, ".line-harness-config.json");
+  const configPath = getConfigPath(repoDir, envName);
   writeFileSync(
     configPath,
     JSON.stringify(
       {
+        envName,
         projectName: state.projectName,
         workerName: state.workerName,
         workerUrl: state.workerUrl,
@@ -585,6 +626,9 @@ async function runSetupInner(
         d1DatabaseId: state.d1DatabaseId,
         r2BucketName: state.r2BucketName,
         accountId: state.accountId,
+        liffId: state.liffId,
+        botBasicId: state.botBasicId,
+        productionBranch: productionBranchForEnv(envName),
       },
       null,
       2,
@@ -592,7 +636,7 @@ async function runSetupInner(
   );
 
   // Clean up state file on success
-  const statePath = getStatePath(repoDir);
+  const statePath = getStatePath(repoDir, envName);
   if (existsSync(statePath)) {
     const { unlinkSync } = await import("node:fs");
     unlinkSync(statePath);
