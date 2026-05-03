@@ -89,13 +89,14 @@ forms.post('/api/forms', async (c) => {
       onSubmitWebhookHeaders?: string | null;
       onSubmitWebhookFailMessage?: string | null;
       saveToMetadata?: boolean;
+      isActive?: boolean;
     }>();
 
     if (!body.name) {
       return c.json({ success: false, error: 'name is required' }, 400);
     }
 
-    const form = await createForm(c.env.DB, {
+    let form = await createForm(c.env.DB, {
       name: body.name,
       description: body.description ?? null,
       fields: JSON.stringify(body.fields ?? []),
@@ -108,6 +109,10 @@ forms.post('/api/forms', async (c) => {
       onSubmitWebhookFailMessage: body.onSubmitWebhookFailMessage ?? null,
       saveToMetadata: body.saveToMetadata,
     });
+
+    if (body.isActive === false) {
+      form = (await updateForm(c.env.DB, form.id, { isActive: false })) ?? form;
+    }
 
     return c.json({ success: true, data: serializeForm(form) }, 201);
   } catch (err) {

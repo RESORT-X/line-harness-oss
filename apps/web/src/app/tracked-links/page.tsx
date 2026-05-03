@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { ApiResponse, Tag } from '@line-crm/shared'
+import type { ApiResponse, Scenario, Tag } from '@line-crm/shared'
 import Header from '@/components/layout/header'
 import { api, fetchApi } from '@/lib/api'
 
@@ -82,6 +82,7 @@ function ClickRanking({ links }: { links: TrackedLink[] }) {
 export default function TrackedLinksPage() {
   const [links, setLinks] = useState<TrackedLink[]>([])
   const [tags, setTags] = useState<Tag[]>([])
+  const [scenarios, setScenarios] = useState<(Scenario & { stepCount?: number })[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState<Notice>(null)
@@ -89,11 +90,15 @@ export default function TrackedLinksPage() {
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
   const [copiedId, setCopiedId] = useState<string | null>(null)
-  const [form, setForm] = useState({ name: '', originalUrl: '', tagId: '' })
+  const [form, setForm] = useState({ name: '', originalUrl: '', tagId: '', scenarioId: '' })
 
   const tagById = useMemo(() => {
     return new Map(tags.map((tag) => [tag.id, tag]))
   }, [tags])
+
+  const scenarioById = useMemo(() => {
+    return new Map(scenarios.map((scenario) => [scenario.id, scenario]))
+  }, [scenarios])
 
   const totalClicks = useMemo(() => {
     return links.reduce((total, link) => total + (link.clickCount || 0), 0)
@@ -103,9 +108,10 @@ export default function TrackedLinksPage() {
     setLoading(true)
     setError('')
     try {
-      const [linksResult, tagsResult] = await Promise.allSettled([
+      const [linksResult, tagsResult, scenariosResult] = await Promise.allSettled([
         fetchApi<ApiResponse<TrackedLink[]>>('/api/tracked-links'),
         api.tags.list(),
+        api.scenarios.list(),
       ])
 
       if (linksResult.status === 'fulfilled') {
@@ -121,6 +127,10 @@ export default function TrackedLinksPage() {
 
       if (tagsResult.status === 'fulfilled' && tagsResult.value.success) {
         setTags(tagsResult.value.data)
+      }
+
+      if (scenariosResult.status === 'fulfilled' && scenariosResult.value.success) {
+        setScenarios(scenariosResult.value.data)
       }
     } catch (err) {
       setError(getErrorMessage(err, 'トラッキングリンクの読み込みに失敗しました。'))
@@ -161,12 +171,13 @@ export default function TrackedLinksPage() {
           name,
           originalUrl,
           tagId: form.tagId || null,
+          scenarioId: form.scenarioId || null,
         }),
       })
 
       if (res.success) {
         setLinks((current) => [res.data, ...current])
-        setForm({ name: '', originalUrl: '', tagId: '' })
+        setForm({ name: '', originalUrl: '', tagId: '', scenarioId: '' })
         setShowCreate(false)
         setNotice({ type: 'success', text: 'トラッキングリンクを作成しました。' })
       } else {
@@ -193,6 +204,24 @@ export default function TrackedLinksPage() {
       }
     } catch (err) {
       setNotice({ type: 'error', text: getErrorMessage(err, '状態変更に失敗しました。') })
+    }
+  }
+
+  const handleUpdateScenario = async (link: TrackedLink, scenarioId: string) => {
+    setNotice(null)
+    try {
+      const res = await fetchApi<ApiResponse<TrackedLink>>(`/api/tracked-links/${link.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ scenarioId: scenarioId || null }),
+      })
+      if (res.success) {
+        setLinks((current) => current.map((item) => (item.id === link.id ? res.data : item)))
+        setNotice({ type: 'success', text: 'クリック後シナリオを更新しました。' })
+      } else {
+        setNotice({ type: 'error', text: res.error })
+      }
+    } catch (err) {
+      setNotice({ type: 'error', text: getErrorMessage(err, 'シナリオ紐付けの更新に失敗しました。') })
     }
   }
 
@@ -264,7 +293,7 @@ export default function TrackedLinksPage() {
       {showCreate && (
         <form onSubmit={handleCreate} className="mb-6 bg-white rounded-lg border border-gray-200 p-6">
           <h2 className="text-sm font-semibold text-gray-800 mb-4">新規リンクを作成</h2>
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">リンク名</label>
               <input
@@ -294,6 +323,21 @@ export default function TrackedLinksPage() {
                 <option value="">タグなし</option>
                 {tags.map((tag) => (
                   <option key={tag.id} value={tag.id}>{tag.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">クリック後に開始するシナリオ</label>
+              <select
+                value={form.scenarioId}
+                onChange={(event) => setForm({ ...form, scenarioId: event.target.value })}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 min-h-[44px] text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
+              >
+                <option value="">シナリオなし</option>
+                {scenarios.map((scenario) => (
+                  <option key={scenario.id} value={scenario.id}>
+                    {scenario.name}{scenario.stepCount !== undefined ? ` (${scenario.stepCount}ステップ)` : ''}
+                  </option>
                 ))}
               </select>
             </div>
@@ -354,11 +398,12 @@ export default function TrackedLinksPage() {
         </div>
       ) : (
         <div className="bg-white rounded-lg border border-gray-200 overflow-x-auto">
-          <table className="w-full min-w-[820px]">
+          <table className="w-full min-w-[980px]">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">リンク</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">付与タグ</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">クリック後シナリオ</th>
                 <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">クリック</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">状態</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">作成日</th>
@@ -368,6 +413,7 @@ export default function TrackedLinksPage() {
             <tbody className="divide-y divide-gray-200">
               {links.map((link) => {
                 const tag = link.tagId ? tagById.get(link.tagId) : null
+                const scenario = link.scenarioId ? scenarioById.get(link.scenarioId) : null
                 return (
                   <tr key={link.id} className="hover:bg-gray-50">
                     <td className="px-4 py-3">
@@ -390,6 +436,19 @@ export default function TrackedLinksPage() {
                       ) : (
                         <span className="text-sm text-gray-400">タグなし</span>
                       )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <select
+                        value={link.scenarioId ?? ''}
+                        onChange={(event) => handleUpdateScenario(link, event.target.value)}
+                        className="w-full min-w-[180px] rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-700 focus:outline-none focus:ring-2 focus:ring-green-500"
+                        title={scenario?.name ?? 'シナリオなし'}
+                      >
+                        <option value="">シナリオなし</option>
+                        {scenarios.map((item) => (
+                          <option key={item.id} value={item.id}>{item.name}</option>
+                        ))}
+                      </select>
                     </td>
                     <td className="px-4 py-3 text-right text-sm font-semibold text-gray-900">
                       {link.clickCount.toLocaleString('ja-JP')}

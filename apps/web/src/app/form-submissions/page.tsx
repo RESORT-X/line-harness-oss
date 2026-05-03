@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import Link from 'next/link'
 import { fetchApi } from '@/lib/api'
 import Header from '@/components/layout/header'
 import { useAccount } from '@/contexts/account-context'
@@ -94,7 +95,18 @@ export default function FormSubmissionsPage() {
 
   return (
     <div>
-      <Header title="フォーム回答" description="フォーム送信データの一覧" />
+      <Header
+        title="フォーム回答"
+        description="フォーム送信データの一覧"
+        action={
+          <Link
+            href="/forms"
+            className="px-4 py-2 min-h-[44px] rounded-lg border border-gray-300 bg-white text-sm text-gray-700 hover:bg-gray-50 inline-flex items-center"
+          >
+            フォーム管理
+          </Link>
+        }
+      />
 
       {/* Form selector */}
       <div className="mb-6">
@@ -113,7 +125,8 @@ export default function FormSubmissionsPage() {
                 }`}
                 style={selectedFormId === form.id ? { backgroundColor: '#06C755' } : {}}
               >
-                {form.name}
+                <span>{form.name}</span>
+                <span className="ml-2 opacity-70">({form.id.slice(0, 8)})</span>
               </button>
             ))
           )}
