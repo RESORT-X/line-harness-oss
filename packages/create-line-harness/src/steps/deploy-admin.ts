@@ -16,6 +16,42 @@ interface DeployAdminResult {
   adminUrl: string;
 }
 
+interface ConfigureAdminEnvironmentOptions {
+  workerUrl: string;
+  projectName: string;
+}
+
+export async function configureAdminEnvironment(
+  options: ConfigureAdminEnvironmentOptions,
+): Promise<void> {
+  const spinner = p.spinner();
+  spinner.start("Admin UI 環境変数を設定中...");
+  try {
+    await wrangler(
+      [
+        "pages",
+        "secret",
+        "put",
+        "NEXT_PUBLIC_API_URL",
+        "--project-name",
+        options.projectName,
+      ],
+      { input: `${options.workerUrl}\n` },
+    );
+    spinner.stop("Admin UI 環境変数を設定完了");
+  } catch (error: any) {
+    spinner.stop("Admin UI 環境変数の設定をスキップ");
+    p.log.warn(
+      [
+        "Cloudflare Pages への NEXT_PUBLIC_API_URL 設定に失敗しました。",
+        "今回のデプロイはローカル .env.production でビルドされるため動きますが、GitHub連携ビルドを使う場合はPages側の環境変数を確認してください。",
+        `値: ${options.workerUrl}`,
+        `詳細: ${error.message}`,
+      ].join("\n"),
+    );
+  }
+}
+
 export async function deployAdmin(
   options: DeployAdminOptions,
 ): Promise<DeployAdminResult> {
@@ -55,9 +91,15 @@ export async function deployAdmin(
   }
   projectSpinner.stop("Pages プロジェクト準備完了");
 
+  await configureAdminEnvironment({
+    workerUrl: options.workerUrl,
+    projectName: options.projectName,
+  });
+
   // Deploy to CF Pages — hand TTY over to wrangler
   p.log.info("Admin UI をデプロイしています（wrangler の出力が表示されます）...");
   try {
+    const commitMessage = `line-harness admin deploy ${productionBranch}`;
     await wrangler(
       [
         "pages",
@@ -67,6 +109,8 @@ export async function deployAdmin(
         options.projectName,
         "--branch",
         productionBranch,
+        "--commit-message",
+        commitMessage,
         "--commit-dirty=true",
       ],
       { cwd: webDir, tty: true },

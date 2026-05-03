@@ -12,6 +12,7 @@ import {
 import { getFriendByLineUserId, getFriendById } from '@line-crm/db';
 import { addTagToFriend, enrollFriendInScenario } from '@line-crm/db';
 import type { Form as DbForm, FormSubmission as DbFormSubmission } from '@line-crm/db';
+import { syncHubSpotFormSubmission } from '../services/hubspot.js';
 import type { Env } from '../index.js';
 
 const forms = new Hono<Env>();
@@ -89,13 +90,14 @@ forms.post('/api/forms', async (c) => {
       onSubmitWebhookHeaders?: string | null;
       onSubmitWebhookFailMessage?: string | null;
       saveToMetadata?: boolean;
+      isActive?: boolean;
     }>();
 
     if (!body.name) {
       return c.json({ success: false, error: 'name is required' }, 400);
     }
 
-    const form = await createForm(c.env.DB, {
+    let form = await createForm(c.env.DB, {
       name: body.name,
       description: body.description ?? null,
       fields: JSON.stringify(body.fields ?? []),
@@ -108,6 +110,10 @@ forms.post('/api/forms', async (c) => {
       onSubmitWebhookFailMessage: body.onSubmitWebhookFailMessage ?? null,
       saveToMetadata: body.saveToMetadata,
     });
+
+    if (body.isActive === false) {
+      form = (await updateForm(c.env.DB, form.id, { isActive: false })) ?? form;
+    }
 
     return c.json({ success: true, data: serializeForm(form) }, 201);
   } catch (err) {
@@ -423,6 +429,18 @@ forms.post('/api/forms/:id/submit', async (c) => {
       if (form.on_submit_scenario_id) {
         sideEffects.push(enrollFriendInScenario(db, friendId, form.on_submit_scenario_id));
       }
+
+      sideEffects.push(
+        (async () => {
+          const friend = await getFriendById(db, friendId!);
+          if (!friend) return;
+          await syncHubSpotFormSubmission(c.env, friend, {
+            formId,
+            data: submissionData,
+            submittedAt: now,
+          });
+        })(),
+      );
 
       // If webhook returned a join_url (e.g. Meet Harness), send a Flex button to the user
       if (webhookData?.join_url) {

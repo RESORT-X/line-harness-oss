@@ -1,0 +1,14 @@
+{
+  "envName": "dev",
+  "projectName": "resortx-line-harness-dev",
+  "workerName": "resortx-line-harness-dev",
+  "workerUrl": "https://resortx-line-harness-dev.resortx-line-harness.workers.dev",
+  "adminUrl": "https://resortx-line-harness-dev-admin-abfabb7b.pages.dev",
+  "d1DatabaseName": "resortx-line-harness-dev",
+  "d1DatabaseId": "4fdf6607-6634-43a1-9659-d760341d3ec7",
+  "r2BucketName": "resortx-line-harness-dev-images",
+  "accountId": "f63548b5a3c67928483cd3f0355c177b",
+  "liffId": "2009960204-SQdAeo6x",
+  "botBasicId": "@192epugh",
+  "productionBranch": "main"
+}

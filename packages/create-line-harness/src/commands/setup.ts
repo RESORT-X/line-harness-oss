@@ -9,7 +9,7 @@ import { ensureAuth, getAccountId } from "../steps/auth.js";
 import { promptLineCredentials } from "../steps/prompt.js";
 import { createDatabase } from "../steps/database.js";
 import { deployWorker } from "../steps/deploy-worker.js";
-import { deployAdmin } from "../steps/deploy-admin.js";
+import { configureAdminEnvironment, deployAdmin } from "../steps/deploy-admin.js";
 import { setSecrets } from "../steps/secrets.js";
 import { generateMcpConfig } from "../steps/mcp-config.js";
 import { generateApiKey } from "../lib/crypto.js";
@@ -179,7 +179,10 @@ function describeAccount(
 }
 
 function defaultProjectName(envName: string): string {
-  return envName === DEFAULT_ENV ? "line-harness" : `line-harness-${envName}`;
+  if (envName === "dev" || envName === "prd") {
+    return `resortx-line-harness-${envName}`;
+  }
+  return envName === DEFAULT_ENV ? "resortx-line-harness" : `resortx-line-harness-${envName}`;
 }
 
 function productionBranchForEnv(envName: string): string {
@@ -721,6 +724,10 @@ WHERE channel_id = ${q(state.lineChannelId!)};
     saveState(repoDir, envName, state);
   } else {
     p.log.success(`Admin UI: デプロイ済み（${state.adminUrl}）`);
+    await configureAdminEnvironment({
+      workerUrl: state.workerUrl!,
+      projectName: adminProjectName,
+    });
   }
 
   // Step 14: Generate MCP config
