@@ -1,7 +1,9 @@
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { checkDeps } from "../steps/check-deps.js";
 import { ensureAuth, getAccountId } from "../steps/auth.js";
 import { promptLineCredentials } from "../steps/prompt.js";
@@ -38,6 +40,13 @@ interface SetupState {
   botBasicId?: string;
   workerUrl?: string;
   adminUrl?: string;
+  /**
+   * Pristine apps/worker/wrangler.toml content captured before we started
+   * substituting account/database IDs. Restored on exit so the cloned repo
+   * stays git-clean. Persisted in state.json so SIGINT mid-run + later
+   * `npx create-line-harness` resume still has the right baseline.
+   */
+  originalWranglerToml?: string;
   completedSteps: string[];
 }
 
@@ -84,6 +93,60 @@ function isDone(state: SetupState, step: string): boolean {
   return state.completedSteps.includes(step);
 }
 
+/**
+ * The OSS-synced wrangler.toml ships with placeholders like
+ * `YOUR_DEV_ACCOUNT_ID` / `YOUR_DEV_D1_DATABASE_ID` so it never leaks the
+ * upstream maintainer's IDs. Wrangler reads those placeholders verbatim and
+ * fails routing (`Could not route to /accounts/YOUR_DEV_ACCOUNT_ID/...`),
+ * which used to surface as "no such table: line_accounts" two steps later.
+ *
+ * We patch the file in-place (so `wrangler` resolves `main = "src/index.ts"`
+ * and `assets.directory` correctly relative to apps/worker/) and capture the
+ * pristine content into the setup state so it can be restored at the end of
+ * the run — leaving the tracked file dirty would break a future
+ * `git pull --ff-only` on `~/.line-harness`.
+ *
+ * Replaces EVERY account_id / database_id literal — covers both placeholders
+ * and real IDs left over from a prior install or a different Cloudflare
+ * account. Idempotent: safe to call multiple times.
+ */
+function applyPatchedConfig(
+  state: SetupState,
+  repoDir: string,
+  accountId: string,
+  databaseId?: string,
+): void {
+  const tomlPath = join(repoDir, "apps/worker/wrangler.toml");
+  if (!existsSync(tomlPath)) return;
+  // Capture the pristine file the FIRST time we patch (before our
+  // substitution touches it), so we can restore it on exit and not pollute
+  // future `git pull --ff-only` runs.
+  if (state.originalWranglerToml === undefined) {
+    state.originalWranglerToml = readFileSync(tomlPath, "utf-8");
+  }
+  let content = state.originalWranglerToml;
+  content = content.replace(/account_id\s*=\s*"[^"]*"/g, `account_id = "${accountId}"`);
+  if (databaseId) {
+    content = content.replace(/database_id\s*=\s*"[^"]*"/g, `database_id = "${databaseId}"`);
+  }
+  writeFileSync(tomlPath, content);
+}
+
+/**
+ * Restore the original wrangler.toml so the cloned repo is git-clean again.
+ * Called from the top-level try/finally so it runs on success, error, and
+ * SIGINT alike.
+ */
+function restoreWranglerToml(state: SetupState, repoDir: string): void {
+  if (state.originalWranglerToml === undefined) return;
+  const tomlPath = join(repoDir, "apps/worker/wrangler.toml");
+  try {
+    writeFileSync(tomlPath, state.originalWranglerToml);
+  } catch {
+    // Best effort — user can `git -C ~/.line-harness checkout apps/worker/wrangler.toml`.
+  }
+}
+
 function markDone(state: SetupState, step: string): void {
   if (!state.completedSteps.includes(step)) {
     state.completedSteps.push(step);
@@ -121,10 +184,6 @@ function defaultProjectName(envName: string): string {
 
 function productionBranchForEnv(envName: string): string {
   return envName === "prd" ? "production" : "main";
-}
-
-function sqlString(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`;
 }
 
 /**
@@ -245,9 +304,46 @@ export async function runSetup(repoDir: string, envName = DEFAULT_ENV): Promise<
     );
   }
 
+  // Resume hygiene: a previous (possibly aborted) run may have left
+  // wrangler.toml patched and cached the now-stale baseline in state.json.
+  // Roll the file back to that baseline first, then forget it — the next
+  // applyPatchedConfig() will re-capture the current (possibly git-pulled)
+  // version. Without this, resuming overwrites a freshly-pulled toml with
+  // the stale snapshot.
+  if (state.originalWranglerToml !== undefined) {
+    restoreWranglerToml(state, repoDir);
+    state.originalWranglerToml = undefined;
+    saveState(repoDir, envName, state);
+  }
+
+  // process.exit() skips the finally block in Node, and clack's p.cancel()
+  // inside runSetupInner can call it too. Centralise restore + persist into
+  // one helper so every exit path runs it before exiting.
+  // Critically: also clear originalWranglerToml in state so a future rerun
+  // (after `git pull` may have updated apps/worker/wrangler.toml) does NOT
+  // restore yesterday's snapshot over today's freshly-pulled file.
+  const cleanup = (persist = true): void => {
+    restoreWranglerToml(state, repoDir);
+    state.originalWranglerToml = undefined;
+    if (persist) {
+      saveState(repoDir, envName, state);
+    }
+  };
+
+  // Best-effort restore on SIGINT (Ctrl-C). Without this the user's repo
+  // is left dirty and `ensureRepo()` next time can't ff-only.
+  const onSignal = (sig: NodeJS.Signals) => {
+    cleanup();
+    process.exit(sig === "SIGINT" ? 130 : 143);
+  };
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+
   try {
     await runSetupInner(state, repoDir, envName);
+    cleanup(false);
   } catch (error) {
+    cleanup();
     if (error instanceof WranglerError) {
       const help = error.getHelp();
       if (help) {
@@ -261,6 +357,9 @@ export async function runSetup(repoDir: string, envName = DEFAULT_ENV): Promise<
       process.exit(1);
     }
     throw error;
+  } finally {
+    process.removeListener("SIGINT", onSignal);
+    process.removeListener("SIGTERM", onSignal);
   }
 }
 
@@ -287,6 +386,11 @@ async function runSetupInner(
   }
   // Pin all wrangler commands to this account
   setAccountId(state.accountId);
+  // Patch wrangler.toml's account_id placeholder immediately — d1/worker
+  // commands consult the toml file directly, and an unsubstituted
+  // `YOUR_DEV_ACCOUNT_ID` would 404 every API call.
+  applyPatchedConfig(state, repoDir, state.accountId);
+  saveState(repoDir, envName, state);
 
   // Step 1: Cloudflare R2 billing setup
   if (!isDone(state, "r2billing")) {
@@ -404,9 +508,18 @@ async function runSetupInner(
     const { databaseId, databaseName } = await createDatabase(repoDir, state.projectName!);
     state.d1DatabaseId = databaseId;
     state.d1DatabaseName = databaseName;
+    // Now that the real D1 ID is known, finish patching wrangler.toml so
+    // that `wrangler deploy` / future `d1 execute --file` calls hit the
+    // correct database instead of the placeholder.
+    applyPatchedConfig(state, repoDir, state.accountId, databaseId);
     markDone(state, "database");
     saveState(repoDir, envName, state);
   } else {
+    // Resumed install — wrangler.toml may have been re-cloned with
+    // placeholders, so patch it again with the cached IDs.
+    if (state.d1DatabaseId) {
+      applyPatchedConfig(state, repoDir, state.accountId, state.d1DatabaseId);
+    }
     p.log.success(`D1 データベース: 作成済み（${state.d1DatabaseId}）`);
   }
 
@@ -488,52 +601,103 @@ async function runSetupInner(
     p.log.success("シークレット: 設定済み");
   }
 
-  // Step 12: Register LINE account in DB
+  // Step 12: Register LINE account in DB.
+  // We INSERT directly via `wrangler d1 execute` instead of POSTing to
+  // /api/line-accounts. The CLI is already authenticated against the user's
+  // Cloudflare account and has wrangler, so going through the Worker would
+  // only add a DNS-propagation race (new workers.dev subdomains take a few
+  // minutes to resolve) for no real benefit. Direct SQL is also idempotent
+  // via ON CONFLICT(channel_id), preserving any name the operator may have
+  // set later in the dashboard.
   if (!isDone(state, "lineAccount")) {
     const s = p.spinner();
     s.start("LINE アカウント登録中...");
+    // Two separate temp files so we can clean each one immediately and never
+    // hold both plaintext credentials on disk simultaneously.
+    const insertSqlFile = join(tmpdir(), `clh-line-account-${randomUUID()}.sql`);
+    const loginSqlFile = join(tmpdir(), `clh-line-login-${randomUUID()}.sql`);
+    const q = (val: string) => `'${val.replace(/'/g, "''")}'`;
+    let insertErr: unknown = null;
+
     try {
-      const res = await fetch(`${state.workerUrl}/api/line-accounts`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${state.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          name: "LINE Harness",
-          channelId: state.lineChannelId,
-          channelAccessToken: state.lineChannelAccessToken,
-          channelSecret: state.lineChannelSecret,
-        }),
-      });
-      if (res.ok) {
-        // Set LINE Login/LIFF fields not supported by the public account API.
-        try {
-          await wrangler([
-            "d1",
-            "execute",
-            state.d1DatabaseName!,
-            "--remote",
-            "--command",
-            [
-              "UPDATE line_accounts SET",
-              `login_channel_id = ${sqlString(state.lineLoginChannelId!)},`,
-              `login_channel_secret = ${sqlString(state.lineLoginChannelSecret!)},`,
-              `liff_id = ${sqlString(state.liffId!)}`,
-              `WHERE channel_id = ${sqlString(state.lineChannelId!)}`,
-            ].join(" "),
-          ]);
-        } catch {
-          // Non-critical
-        }
-        s.stop("LINE アカウント登録完了");
-      } else {
-        const data = (await res.json()) as Record<string, unknown>;
-        s.stop(`LINE アカウント登録: ${data.error || "エラー"}`);
+      const id = randomUUID();
+      // Use the same timestamp format the rest of the app writes via jstNow()
+      // — ISO 8601 with an explicit '+09:00' suffix. Relying on table defaults
+      // or raw strftime(...) drops the timezone marker, which makes the row
+      // sort inconsistently with rows written by the worker.
+      const jstNowStr =
+        new Date(Date.now() + 9 * 60 * 60_000).toISOString().slice(0, -1) + "+09:00";
+      // Step A (required): upsert the core row using only the columns that
+      // exist in every shipped schema version. login_channel_id was added in
+      // a later migration, so we update it separately as best-effort to keep
+      // the CLI working against older databases that resumed an old install.
+      const insertSql = `
+INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret, is_active, created_at, updated_at)
+VALUES (${q(id)}, ${q(state.lineChannelId!)}, ${q("LINE Harness")}, ${q(state.lineChannelAccessToken!)}, ${q(state.lineChannelSecret!)}, 1, ${q(jstNowStr)}, ${q(jstNowStr)})
+ON CONFLICT(channel_id) DO UPDATE SET
+  channel_access_token = excluded.channel_access_token,
+  channel_secret = excluded.channel_secret,
+  updated_at = ${q(jstNowStr)};
+`;
+      // Restrict to the owner — os.tmpdir() can be a shared directory
+      // (Linux /tmp), and the file holds plaintext channel secrets.
+      writeFileSync(insertSqlFile, insertSql, { mode: 0o600 });
+      try {
+        await wrangler([
+          "d1",
+          "execute",
+          state.d1DatabaseName!,
+          "--remote",
+          "--file",
+          insertSqlFile,
+        ]);
+      } finally {
+        // Remove the secrets-bearing file before any further work (including
+        // a possible exit). Don't wait for an outer finally that exit() skips.
+        try { rmSync(insertSqlFile, { force: true }); } catch { /* best-effort */ }
+      }
+    } catch (err) {
+      insertErr = err;
+    }
+
+    if (insertErr) {
+      s.stop(`LINE アカウント登録に失敗: ${insertErr instanceof Error ? insertErr.message : String(insertErr)}`);
+      p.log.error(
+        `D1 への直接書き込みに失敗しました。'npx create-line-harness@latest' を再実行してください。`,
+      );
+      saveState(repoDir, envName, state);
+      process.exit(1);
+    }
+
+    // Step B (best-effort): set LINE Login + LIFF columns. May fail on older
+    // schemas that don't have those columns — that's fine, the dashboard
+    // can set them later.
+    try {
+      const loginSql = `
+UPDATE line_accounts SET
+  login_channel_id = ${q(state.lineLoginChannelId!)},
+  login_channel_secret = ${q(state.lineLoginChannelSecret!)},
+  liff_id = ${q(state.liffId!)}
+WHERE channel_id = ${q(state.lineChannelId!)};
+`;
+      writeFileSync(loginSqlFile, loginSql, { mode: 0o600 });
+      try {
+        await wrangler([
+          "d1",
+          "execute",
+          state.d1DatabaseName!,
+          "--remote",
+          "--file",
+          loginSqlFile,
+        ]);
+      } finally {
+        try { rmSync(loginSqlFile, { force: true }); } catch { /* best-effort */ }
       }
     } catch {
-      s.stop("LINE アカウント登録スキップ（Worker 起動待ち）");
+      // Non-critical — LINE Login/LIFF columns can be set from the dashboard.
     }
+
+    s.stop("LINE アカウント登録完了");
     markDone(state, "lineAccount");
     saveState(repoDir, envName, state);
   } else {
