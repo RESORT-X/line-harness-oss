@@ -74,6 +74,36 @@ function ImagePreview({ content }: { content: string }) {
   }
 }
 
+function validateStepForm(form: StepFormState): string {
+  if (!Number.isInteger(form.stepOrder) || form.stepOrder < 1) {
+    return 'ステップ順序は1以上の整数で入力してください'
+  }
+  if (!Number.isFinite(form.delayMinutes) || form.delayMinutes < 0) {
+    return '遅延は0以上の分数で入力してください'
+  }
+  if (!form.messageContent.trim()) {
+    return 'メッセージ内容を入力してください'
+  }
+  if (form.messageType === 'flex') {
+    try {
+      JSON.parse(form.messageContent)
+    } catch {
+      return 'FlexメッセージはJSON形式で入力してください'
+    }
+  }
+  if (form.messageType === 'image') {
+    try {
+      const parsed = JSON.parse(form.messageContent)
+      if (!parsed.originalContentUrl && !parsed.previewImageUrl) {
+        return '画像メッセージにはoriginalContentUrlまたはpreviewImageUrlが必要です'
+      }
+    } catch {
+      return '画像メッセージはJSON形式で入力してください'
+    }
+  }
+  return ''
+}
+
 export default function ScenarioDetailClient({ scenarioId }: { scenarioId: string }) {
   const id = scenarioId
 
@@ -90,6 +120,7 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
   const [stepForm, setStepForm] = useState<StepFormState>(emptyStepForm)
   const [stepSaving, setStepSaving] = useState(false)
   const [stepError, setStepError] = useState('')
+  const [deletingStepId, setDeletingStepId] = useState<string | null>(null)
 
   const loadScenario = useCallback(async () => {
     setLoading(true)
@@ -162,8 +193,9 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
   }
 
   const handleSaveStep = async () => {
-    if (!stepForm.messageContent.trim()) {
-      setStepError('メッセージ内容を入力してください')
+    const validationError = validateStepForm(stepForm)
+    if (validationError) {
+      setStepError(validationError)
       return
     }
     setStepSaving(true)
@@ -204,11 +236,18 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
 
   const handleDeleteStep = async (stepId: string) => {
     if (!confirm('このステップを削除してもよいですか？')) return
+    setDeletingStepId(stepId)
     try {
-      await api.scenarios.deleteStep(id, stepId)
-      loadScenario()
+      const res = await api.scenarios.deleteStep(id, stepId)
+      if (!res.success) {
+        setError(res.error)
+        return
+      }
+      await loadScenario()
     } catch {
       setError('ステップの削除に失敗しました')
+    } finally {
+      setDeletingStepId(null)
     }
   }
 
@@ -238,6 +277,8 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
       </div>
     )
   }
+
+  const sortedSteps = [...scenario.steps].sort((a, b) => a.stepOrder - b.stepOrder)
 
   return (
     <div>
@@ -353,7 +394,7 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
             )}
             <div className="flex items-center gap-4 text-xs text-gray-500">
               <span>トリガー: {triggerOptions.find(o => o.value === scenario.triggerType)?.label ?? scenario.triggerType}</span>
-              <span>ステップ数: {scenario.steps.length}</span>
+              <span>ステップ数: {sortedSteps.length}</span>
               <span>作成日: {new Date(scenario.createdAt).toLocaleDateString('ja-JP')}</span>
             </div>
           </div>
@@ -449,14 +490,13 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
         )}
 
         {/* Steps list */}
-        {scenario.steps.length === 0 ? (
+        {sortedSteps.length === 0 ? (
           <div className="text-center py-8 text-gray-400 text-sm">
             ステップがありません。「+ ステップ追加」から追加してください。
           </div>
         ) : (
           <div className="space-y-3">
-            {scenario.steps
-              .sort((a, b) => a.stepOrder - b.stepOrder)
+            {sortedSteps
               .map((step) => (
                 <div
                   key={step.id}
@@ -501,9 +541,10 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                       </button>
                       <button
                         onClick={() => handleDeleteStep(step.id)}
-                        className="text-xs text-red-500 hover:text-red-700 px-2 py-1 rounded hover:bg-red-50 transition-colors min-h-[44px] flex items-center"
+                        disabled={deletingStepId === step.id}
+                        className="text-xs text-red-500 hover:text-red-700 px-2 py-1 rounded hover:bg-red-50 transition-colors min-h-[44px] flex items-center disabled:opacity-50"
                       >
-                        削除
+                        {deletingStepId === step.id ? '削除中...' : '削除'}
                       </button>
                     </div>
                   </div>
