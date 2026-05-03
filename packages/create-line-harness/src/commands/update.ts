@@ -1,11 +1,11 @@
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ensureAuth } from "../steps/auth.js";
 import { deployAdmin } from "../steps/deploy-admin.js";
 import { deployWorker } from "../steps/deploy-worker.js";
-import { DEFAULT_ENV, envLabel, envSuffix } from "../lib/env.js";
+import { DEFAULT_ENV, envLabel, envSuffix, resolveWorkerUrlForEnv } from "../lib/env.js";
 import { setAccountId, wrangler } from "../lib/wrangler.js";
 
 interface HarnessConfig {
@@ -49,6 +49,26 @@ function adminProjectNameFromUrl(adminUrl: string | undefined, projectName: stri
   return new URL(adminUrl).hostname.replace(".pages.dev", "");
 }
 
+function isBenignMigrationError(error: unknown): boolean {
+  const text = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return text.includes("duplicate column") || text.includes("already exists");
+}
+
+async function ensureScenarioCompletionFormColumn(databaseName: string): Promise<void> {
+  try {
+    await wrangler([
+      "d1",
+      "execute",
+      databaseName,
+      "--remote",
+      "--command",
+      "ALTER TABLE scenarios ADD COLUMN on_completion_form_id TEXT REFERENCES forms (id) ON DELETE SET NULL",
+    ]);
+  } catch (error) {
+    if (!isBenignMigrationError(error)) throw error;
+  }
+}
+
 function assertConfig(config: HarnessConfig, repoDir: string, envName: string): void {
   const missing = [
     ["projectName", config.projectName],
@@ -70,6 +90,19 @@ function assertConfig(config: HarnessConfig, repoDir: string, envName: string): 
   }
 }
 
+function applyDefaultWorkerUrl(
+  config: HarnessConfig,
+  repoDir: string,
+  envName: string,
+): void {
+  const resolvedWorkerUrl = resolveWorkerUrlForEnv(envName, config.workerUrl);
+  if (!resolvedWorkerUrl || resolvedWorkerUrl === config.workerUrl) return;
+
+  config.workerUrl = resolvedWorkerUrl;
+  writeFileSync(getConfigPath(repoDir, envName), JSON.stringify(config, null, 2) + "\n");
+  p.log.info(`公開URL: ${pc.cyan(resolvedWorkerUrl)}`);
+}
+
 export async function runUpdate(repoDir: string, envName = DEFAULT_ENV): Promise<void> {
   p.intro(pc.bgCyan(pc.black(` LINE Harness アップデート: ${envLabel(envName)} `)));
 
@@ -84,6 +117,7 @@ export async function runUpdate(repoDir: string, envName = DEFAULT_ENV): Promise
     process.exit(1);
   }
 
+  applyDefaultWorkerUrl(config, repoDir, envName);
   assertConfig(config, repoDir, envName);
   const projectName = config.projectName;
   const workerName = config.workerName || projectName;
@@ -107,9 +141,15 @@ export async function runUpdate(repoDir: string, envName = DEFAULT_ENV): Promise
       ["d1", "migrations", "apply", config.d1DatabaseName || projectName, "--remote"],
       { cwd: join(repoDir, "packages/db") },
     );
+    await ensureScenarioCompletionFormColumn(config.d1DatabaseName || projectName);
     s.stop("マイグレーション完了");
   } catch {
-    s.stop("マイグレーション完了（変更なし）");
+    try {
+      await ensureScenarioCompletionFormColumn(config.d1DatabaseName || projectName);
+      s.stop("マイグレーション完了");
+    } catch {
+      s.stop("マイグレーション完了（変更なし）");
+    }
   }
 
   // Redeploy Worker
@@ -118,6 +158,7 @@ export async function runUpdate(repoDir: string, envName = DEFAULT_ENV): Promise
     d1DatabaseId: config.d1DatabaseId,
     d1DatabaseName: config.d1DatabaseName || projectName,
     workerName,
+    workerUrl: config.workerUrl!,
     accountId: config.accountId!,
     liffId: config.liffId,
     r2BucketName: config.r2BucketName,

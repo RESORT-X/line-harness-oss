@@ -3,12 +3,18 @@
 import { useState, useEffect, useCallback } from 'react'
 
 import Link from 'next/link'
-import type { Scenario, ScenarioStep, ScenarioTriggerType, MessageType } from '@line-crm/shared'
-import { api } from '@/lib/api'
+import type { ApiResponse, Scenario, ScenarioStep, ScenarioTriggerType, MessageType } from '@line-crm/shared'
+import { api, fetchApi } from '@/lib/api'
 import Header from '@/components/layout/header'
 import FlexPreviewComponent from '@/components/flex-preview'
 
 type ScenarioWithSteps = Scenario & { steps: ScenarioStep[] }
+
+type FormOption = {
+  id: string
+  name: string
+  isActive: boolean
+}
 
 const triggerOptions: { value: ScenarioTriggerType; label: string }[] = [
   { value: 'friend_add', label: '友だち追加時' },
@@ -112,8 +118,18 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
   const [error, setError] = useState('')
 
   const [editing, setEditing] = useState(false)
-  const [editForm, setEditForm] = useState({ name: '', description: '', triggerType: 'friend_add' as ScenarioTriggerType, isActive: true })
+  const [editForm, setEditForm] = useState({
+    name: '',
+    description: '',
+    triggerType: 'friend_add' as ScenarioTriggerType,
+    onCompletionFormId: '',
+    isActive: true,
+  })
   const [saving, setSaving] = useState(false)
+  const [forms, setForms] = useState<FormOption[]>([])
+  const [completionFormId, setCompletionFormId] = useState('')
+  const [completionSaving, setCompletionSaving] = useState(false)
+  const [completionMessage, setCompletionMessage] = useState('')
 
   const [showStepForm, setShowStepForm] = useState(false)
   const [editingStepId, setEditingStepId] = useState<string | null>(null)
@@ -133,8 +149,10 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
           name: res.data.name,
           description: res.data.description ?? '',
           triggerType: res.data.triggerType,
+          onCompletionFormId: res.data.onCompletionFormId ?? '',
           isActive: res.data.isActive,
         })
+        setCompletionFormId(res.data.onCompletionFormId ?? '')
       } else {
         setError(res.error)
       }
@@ -149,6 +167,27 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
     loadScenario()
   }, [loadScenario])
 
+  useEffect(() => {
+    let cancelled = false
+
+    const loadForms = async () => {
+      try {
+        const res = await fetchApi<ApiResponse<FormOption[]>>('/api/forms')
+        if (!cancelled && res.success) {
+          setForms(res.data)
+        }
+      } catch {
+        if (!cancelled) setForms([])
+      }
+    }
+
+    loadForms()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   const handleSaveScenario = async () => {
     if (!editForm.name.trim()) return
     setSaving(true)
@@ -157,6 +196,7 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
         name: editForm.name,
         description: editForm.description || null,
         triggerType: editForm.triggerType,
+        onCompletionFormId: editForm.onCompletionFormId || null,
         isActive: editForm.isActive,
       })
       if (res.success) {
@@ -169,6 +209,27 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
       setError('保存に失敗しました')
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleSaveCompletionForm = async () => {
+    setCompletionSaving(true)
+    setCompletionMessage('')
+    try {
+      const res = await api.scenarios.update(id, {
+        onCompletionFormId: completionFormId || null,
+      })
+      if (res.success) {
+        setScenario((current) => current ? { ...current, onCompletionFormId: res.data.onCompletionFormId } : current)
+        setEditForm((current) => ({ ...current, onCompletionFormId: res.data.onCompletionFormId ?? '' }))
+        setCompletionMessage('保存しました')
+      } else {
+        setCompletionMessage(res.error)
+      }
+    } catch {
+      setCompletionMessage('保存に失敗しました')
+    } finally {
+      setCompletionSaving(false)
     }
   }
 
@@ -279,6 +340,7 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
   }
 
   const sortedSteps = [...scenario.steps].sort((a, b) => a.stepOrder - b.stepOrder)
+  const completionForm = forms.find((form) => form.id === scenario.onCompletionFormId) ?? null
 
   return (
     <div>
@@ -334,6 +396,24 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                 ))}
               </select>
             </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">完了後に送るフォーム</label>
+              <select
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
+                value={editForm.onCompletionFormId}
+                onChange={(e) => setEditForm({ ...editForm, onCompletionFormId: e.target.value })}
+              >
+                <option value="">送信しない</option>
+                {forms.map((form) => (
+                  <option key={form.id} value={form.id}>
+                    {form.name}{form.isActive ? '' : '（停止中）'}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-400 mt-1">
+                最後のステップ配信が終わったあと、選択したフォームの回答リンクを自動送信します。
+              </p>
+            </div>
             <div className="flex items-center gap-2">
               <input
                 type="checkbox"
@@ -360,6 +440,7 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                     name: scenario.name,
                     description: scenario.description ?? '',
                     triggerType: scenario.triggerType,
+                    onCompletionFormId: scenario.onCompletionFormId ?? '',
                     isActive: scenario.isActive,
                   })
                 }}
@@ -395,10 +476,53 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
             <div className="flex items-center gap-4 text-xs text-gray-500">
               <span>トリガー: {triggerOptions.find(o => o.value === scenario.triggerType)?.label ?? scenario.triggerType}</span>
               <span>ステップ数: {sortedSteps.length}</span>
+              <span>完了後フォーム: {completionForm ? completionForm.name : 'なし'}</span>
               <span>作成日: {new Date(scenario.createdAt).toLocaleDateString('ja-JP')}</span>
             </div>
           </div>
         )}
+      </div>
+
+      {/* Completion form */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div className="flex-1 max-w-xl">
+            <h3 className="text-sm font-semibold text-gray-800">完了後フォーム</h3>
+            <p className="text-xs text-gray-500 mt-1">
+              最後のステップ配信が終わったあと、選択したフォームの回答リンクをLINEで自動送信します。
+            </p>
+            <select
+              className="mt-3 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
+              value={completionFormId}
+              onChange={(e) => {
+                setCompletionFormId(e.target.value)
+                setCompletionMessage('')
+              }}
+            >
+              <option value="">送信しない</option>
+              {forms.map((form) => (
+                <option key={form.id} value={form.id}>
+                  {form.name}{form.isActive ? '' : '（停止中）'}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-center gap-3">
+            {completionMessage && (
+              <span className={`text-xs ${completionMessage === '保存しました' ? 'text-green-600' : 'text-red-600'}`}>
+                {completionMessage}
+              </span>
+            )}
+            <button
+              onClick={handleSaveCompletionForm}
+              disabled={completionSaving || completionFormId === (scenario.onCompletionFormId ?? '')}
+              className="px-4 py-2 min-h-[44px] text-sm font-medium text-white rounded-lg disabled:opacity-50 transition-opacity"
+              style={{ backgroundColor: '#06C755' }}
+            >
+              {completionSaving ? '保存中...' : '保存'}
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Steps */}

@@ -1185,12 +1185,16 @@ export async function initForm(formId: string | null): Promise<void> {
     // Silent UUID linking (best-effort, so friend metadata saves correctly)
     const rawIdToken = liff.getIDToken();
     if (rawIdToken) {
+      const urlParams = new URLSearchParams(window.location.search);
       apiCall('/api/liff/link', {
         method: 'POST',
         body: JSON.stringify({
           idToken: rawIdToken,
           displayName: profile.displayName,
           existingUuid: state.friendId,
+          ref: urlParams.get('ref') || '',
+          ig: urlParams.get('ig') || '',
+          lead: urlParams.get('lead') || '',
         }),
       }).then(async (linkRes) => {
         if (linkRes.ok) {
@@ -1259,4 +1263,3 @@ export async function initForm(formId: string | null): Promise<void> {
     renderFormError(err instanceof Error ? err.message : 'エラーが発生しました');
   }
 }
-

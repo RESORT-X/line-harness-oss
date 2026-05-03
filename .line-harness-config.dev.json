@@ -2,7 +2,7 @@
   "envName": "dev",
   "projectName": "resortx-line-harness-dev",
   "workerName": "resortx-line-harness-dev",
-  "workerUrl": "https://resortx-line-harness-dev.resortx-line-harness.workers.dev",
+  "workerUrl": "https://dev.line.rav.support",
   "adminUrl": "https://resortx-line-harness-dev-admin-abfabb7b.pages.dev",
   "d1DatabaseName": "resortx-line-harness-dev",
   "d1DatabaseId": "4fdf6607-6634-43a1-9659-d760341d3ec7",

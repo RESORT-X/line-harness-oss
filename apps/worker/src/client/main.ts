@@ -142,6 +142,7 @@ function showFriendAdd(profile: { displayName: string; pictureUrl?: string }) {
               gate: params.get('gate') || '',
               xh: params.get('xh') || '',
               ig: params.get('ig') || '',
+              lead: params.get('lead') || '',
             }),
           });
         } catch { /* best-effort */ }
@@ -221,6 +222,7 @@ async function linkAndAddFlow() {
         existingUuid: existingUuid,
         ref: ref,
         ig: linkParams.get('ig') || '',
+        lead: linkParams.get('lead') || '',
       }),
     }).then(async (res) => {
       if (res.ok) {
@@ -283,6 +285,7 @@ async function linkAndAddFlow() {
               gate: params.get('gate') || '',
               xh: params.get('xh') || '',
               ig: params.get('ig') || '',
+              lead: params.get('lead') || '',
             }),
           });
         } catch { /* best-effort */ }

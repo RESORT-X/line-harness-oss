@@ -15,3 +15,30 @@ export function envSuffix(envName: string): string {
 export function envLabel(envName: string): string {
   return envName === DEFAULT_ENV ? "default" : envName;
 }
+
+export function defaultWorkerUrlForEnv(envName: string): string | null {
+  if (envName === "dev") return "https://dev.line.rav.support";
+  if (envName === "prd") return "https://line.rav.support";
+  return null;
+}
+
+export function isWorkersDevUrl(value?: string | null): boolean {
+  if (!value) return false;
+  try {
+    return new URL(value).hostname.endsWith(".workers.dev");
+  } catch {
+    return false;
+  }
+}
+
+export function resolveWorkerUrlForEnv(
+  envName: string,
+  currentUrl?: string | null,
+): string | null {
+  const trimmed = currentUrl?.trim();
+  const defaultUrl = defaultWorkerUrlForEnv(envName);
+  const currentOrigin = trimmed ? new URL(trimmed).origin : null;
+  if (!defaultUrl) return currentOrigin;
+  if (!currentOrigin || isWorkersDevUrl(currentOrigin)) return defaultUrl;
+  return currentOrigin;
+}

@@ -12,6 +12,7 @@ interface DeployWorkerOptions {
   d1DatabaseId: string;
   d1DatabaseName: string;
   workerName: string;
+  workerUrl?: string;
   accountId: string;
   liffId: string;
   botBasicId: string;
@@ -20,6 +21,24 @@ interface DeployWorkerOptions {
 
 interface DeployWorkerResult {
   workerUrl: string;
+}
+
+function escapeTomlString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function normalizeWorkerUrl(value?: string): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  const parsed = new URL(trimmed);
+  return parsed.origin;
+}
+
+function customDomainFromWorkerUrl(workerUrl: string | null): string | null {
+  if (!workerUrl) return null;
+  const hostname = new URL(workerUrl).hostname;
+  if (hostname.endsWith(".workers.dev")) return null;
+  return hostname;
 }
 
 export async function deployWorker(
@@ -33,12 +52,29 @@ export async function deployWorker(
     ? readFileSync(tomlPath, "utf-8")
     : null;
 
+  const configuredWorkerUrl = normalizeWorkerUrl(options.workerUrl);
+  const customDomain = customDomainFromWorkerUrl(configuredWorkerUrl);
+  const routesToml = customDomain
+    ? `
+routes = [
+  { pattern = "${escapeTomlString(customDomain)}", custom_domain = true }
+]
+`
+    : "";
+  const varsToml = configuredWorkerUrl
+    ? `
+[vars]
+WORKER_URL = "${escapeTomlString(configuredWorkerUrl)}"
+`
+    : "";
+
   // Write deploy wrangler.toml
   const deployToml = `name = "${options.workerName}"
 main = "src/index.ts"
 compatibility_date = "2024-12-01"
 workers_dev = true
 account_id = "${options.accountId}"
+${routesToml}${varsToml}
 
 # Static assets (LIFF pages) served by Workers Assets
 # SPA fallback ensures all non-API paths serve index.html
@@ -75,14 +111,16 @@ crons = ["*/5 * * * *"]
     // Pipe-first: capture deploy output so we can parse the real URL
     // (Cloudflare serves Workers at https://<worker>.<account-subdomain>.workers.dev,
     // so guessing the hostname is unsafe).
-    let workerUrl: string;
+    let workerUrl = configuredWorkerUrl || "";
     try {
       const output = await wrangler(["deploy"], { cwd: workerDir });
-      const match = output.match(WORKERS_DEV_URL);
-      if (!match) {
-        throw new Error(`Worker URL を出力からパースできません:\n${output}`);
+      if (!workerUrl) {
+        const match = output.match(WORKERS_DEV_URL);
+        if (!match) {
+          throw new Error(`Worker URL を出力からパースできません:\n${output}`);
+        }
+        workerUrl = match[1];
       }
-      workerUrl = match[1];
     } catch (firstError) {
       // Pipe deploy may fail with "non-interactive / CLOUDFLARE_API_TOKEN required"
       // when wrangler needs to refresh its OAuth token. Retry once with a real TTY.
@@ -95,6 +133,11 @@ crons = ["*/5 * * * *"]
         "wrangler の認証を更新するため、対話モードで再実行します（出力が表示されます）...",
       );
       await wrangler(["deploy"], { cwd: workerDir, tty: true });
+
+      if (workerUrl) {
+        p.log.success(`Worker デプロイ完了: ${workerUrl}`);
+        return { workerUrl };
+      }
 
       // Worker is now live. Try a second pipe call to recover the URL — token
       // is fresh so this should succeed cheaply. If it doesn't, we deliberately

@@ -146,6 +146,7 @@ app.get('/api/qr', async (c) => {
 app.get('/r/:ref', async (c) => {
   const ref = c.req.param('ref');
   const formId = c.req.query('form') || '';
+  const leadParam = c.req.query('lead') || '';
 
   // Resolve LIFF URL from pool (same logic as /auth/line)
   let liffUrl = c.env.LIFF_URL;
@@ -169,6 +170,7 @@ app.get('/r/:ref', async (c) => {
   if (liffIdMatch) liffParams.set('liffId', liffIdMatch[1]);
   if (ref) liffParams.set('ref', ref);
   if (formId) liffParams.set('form', formId);
+  if (leadParam) liffParams.set('lead', leadParam);
   const gate = c.req.query('gate');
   if (gate) liffParams.set('gate', gate);
   const xh = c.req.query('xh');
@@ -472,7 +474,7 @@ async function scheduled(
   // 全アカウントの配信が各ループで重複実行されていたバグを修正
   const jobs = [];
   jobs.push(
-    processStepDeliveries(env.DB, defaultLineClient, env.WORKER_URL),
+    processStepDeliveries(env.DB, defaultLineClient, env.WORKER_URL, env),
     processScheduledBroadcasts(env.DB, defaultLineClient, env.WORKER_URL),
     processReminderDeliveries(env.DB, defaultLineClient),
   );

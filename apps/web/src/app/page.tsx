@@ -72,7 +72,7 @@ function StatCard({ title, value, loading, icon, href, accentColor = '#06C755' }
 }
 
 export default function DashboardPage() {
-  const { selectedAccountId, selectedAccount } = useAccount()
+  const { selectedAccountId, selectedAccount, loading: accountLoading } = useAccount()
   const [stats, setStats] = useState<DashboardStats>({
     friendCount: null,
     activeScenarioCount: null,
@@ -85,6 +85,10 @@ export default function DashboardPage() {
   const [error, setError] = useState('')
 
   useEffect(() => {
+    if (accountLoading) return
+
+    let cancelled = false
+
     const load = async () => {
       setLoading(true)
       setError('')
@@ -98,6 +102,7 @@ export default function DashboardPage() {
           api.scoring.rules(),
         ])
 
+        if (cancelled) return
         setStats({
           friendCount:
             friendCountRes.status === 'fulfilled' && friendCountRes.value.success
@@ -125,14 +130,19 @@ export default function DashboardPage() {
               : null,
         })
       } catch {
+        if (cancelled) return
         setError('データの読み込みに失敗しました')
       } finally {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       }
     }
 
     load()
-  }, [selectedAccountId])
+
+    return () => {
+      cancelled = true
+    }
+  }, [selectedAccountId, accountLoading])
 
   return (
     <div>

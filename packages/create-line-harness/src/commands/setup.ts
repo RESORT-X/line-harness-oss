@@ -13,7 +13,7 @@ import { configureAdminEnvironment, deployAdmin } from "../steps/deploy-admin.js
 import { setSecrets } from "../steps/secrets.js";
 import { generateMcpConfig } from "../steps/mcp-config.js";
 import { generateApiKey } from "../lib/crypto.js";
-import { DEFAULT_ENV, envLabel, envSuffix } from "../lib/env.js";
+import { DEFAULT_ENV, envLabel, envSuffix, resolveWorkerUrlForEnv } from "../lib/env.js";
 import {
   getAccountIds,
   setAccountId,
@@ -187,6 +187,19 @@ function defaultProjectName(envName: string): string {
 
 function productionBranchForEnv(envName: string): string {
   return envName === "prd" ? "production" : "main";
+}
+
+function applyDefaultWorkerUrl(state: SetupState, repoDir: string, envName: string): void {
+  const resolvedWorkerUrl = resolveWorkerUrlForEnv(envName, state.workerUrl);
+  if (!resolvedWorkerUrl || resolvedWorkerUrl === state.workerUrl) return;
+
+  const wasWorkerDone = isDone(state, "worker");
+  state.workerUrl = resolvedWorkerUrl;
+  if (wasWorkerDone) {
+    state.completedSteps = state.completedSteps.filter((step) => step !== "worker");
+  }
+  saveState(repoDir, envName, state);
+  p.log.info(`公開URL: ${pc.cyan(resolvedWorkerUrl)}`);
 }
 
 /**
@@ -443,6 +456,7 @@ async function runSetupInner(
   } else {
     p.log.success(`プロジェクト名: ${state.projectName}`);
   }
+  applyDefaultWorkerUrl(state, repoDir, envName);
 
   // Step 4: Get LINE credentials (skip if already saved)
   if (!isDone(state, "credentials") || !state.lineLoginChannelSecret) {
@@ -575,6 +589,7 @@ async function runSetupInner(
       d1DatabaseId: state.d1DatabaseId!,
       d1DatabaseName: state.d1DatabaseName!,
       workerName: state.workerName,
+      workerUrl: state.workerUrl,
       accountId: state.accountId!,
       liffId: state.liffId!,
       r2BucketName: state.r2BucketName!,

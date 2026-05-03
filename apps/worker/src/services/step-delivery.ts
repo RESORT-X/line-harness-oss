@@ -11,6 +11,7 @@ import {
 import type { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
 import { jitterDeliveryTime, addJitter, sleep } from './stealth.js';
+import { sendScenarioCompletionForm } from './scenario-completion-form.js';
 
 /**
  * Replace template variables in message content.
@@ -115,6 +116,7 @@ export async function processStepDeliveries(
   db: D1Database,
   lineClient: LineClient,
   workerUrl?: string,
+  env?: { LINE_CHANNEL_ACCESS_TOKEN: string; LIFF_URL: string; WORKER_URL?: string },
 ): Promise<void> {
   // Skip delivery outside 9:00-23:00 JST window
   const jstHour = new Date(Date.now() + 9 * 60 * 60_000).getUTCHours();
@@ -132,7 +134,7 @@ export async function processStepDeliveries(
       if (i > 0) {
         await sleep(addJitter(50, 200));
       }
-      const sent = await processSingleDelivery(db, lineClient, fs, workerUrl);
+      const sent = await processSingleDelivery(db, lineClient, fs, workerUrl, env);
       if (sent) sendCount++;
     } catch (err) {
       console.error(`Error processing friend_scenario ${fs.id}:`, err);
@@ -153,6 +155,7 @@ async function processSingleDelivery(
     next_delivery_at: string | null;
   },
   workerUrl?: string,
+  env?: { LINE_CHANNEL_ACCESS_TOKEN: string; LIFF_URL: string; WORKER_URL?: string },
 ): Promise<boolean> {
   // Optimistic lock: claim this delivery (prevents duplicate sends from parallel workers)
   const claimed = await claimFriendScenarioForDelivery(db, fs.id, fs.current_step_order);
@@ -208,6 +211,7 @@ async function processSingleDelivery(
         await advanceFriendScenario(db, fs.id, currentStep.step_order, jitteredDate.toISOString().slice(0, -1) + '+09:00');
       } else {
         await completeFriendScenario(db, fs.id);
+        if (env) await sendScenarioCompletionForm(db, env, fs.friend_id, fs.scenario_id);
       }
       return false;
     }
@@ -267,6 +271,7 @@ async function processSingleDelivery(
   } else {
     // This was the last step
     await completeFriendScenario(db, fs.id);
+    if (env) await sendScenarioCompletionForm(db, env, fs.friend_id, fs.scenario_id);
   }
   return true;
 }

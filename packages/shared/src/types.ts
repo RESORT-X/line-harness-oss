@@ -78,6 +78,8 @@ export interface Scenario {
   triggerTagId: string | null;
   /** 紐づく LINE アカウント ID。null = 全アカウント共通として発火 */
   lineAccountId: string | null;
+  /** シナリオ完了後に自動送信するフォームID。null = 送信しない */
+  onCompletionFormId: string | null;
   /** 有効/無効フラグ */
   isActive: boolean;
   /** 作成日時 (ISO 8601) */

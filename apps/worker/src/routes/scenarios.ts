@@ -35,6 +35,7 @@ function serializeScenario(row: DbScenario) {
     // Surfacing this lets the dashboard distinguish "全アカ共通" from orphan scenarios whose
     // owner account was deleted.
     lineAccountId: (row as { line_account_id?: string | null }).line_account_id ?? null,
+    onCompletionFormId: row.on_completion_form_id ?? null,
     isActive: Boolean(row.is_active),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -138,6 +139,7 @@ scenarios.post('/api/scenarios', async (c) => {
       triggerTagId?: string | null;
       isActive?: boolean;
       lineAccountId?: string | null;
+      onCompletionFormId?: string | null;
     }>();
 
     if (!body.name || !body.triggerType) {
@@ -152,9 +154,11 @@ scenarios.post('/api/scenarios', async (c) => {
     });
 
     // Save line_account_id if provided
-    if (body.lineAccountId) {
-      await c.env.DB.prepare(`UPDATE scenarios SET line_account_id = ? WHERE id = ?`)
-        .bind(body.lineAccountId, scenario.id).run();
+    if (body.lineAccountId || body.onCompletionFormId) {
+      await c.env.DB.prepare(`UPDATE scenarios SET line_account_id = ?, on_completion_form_id = ? WHERE id = ?`)
+        .bind(body.lineAccountId ?? null, body.onCompletionFormId ?? null, scenario.id).run();
+      const refreshed = await getScenarioById(c.env.DB, scenario.id);
+      if (refreshed) scenario = refreshed;
     }
 
     // createScenario() always sets is_active=1; override if the caller requested inactive
@@ -179,6 +183,7 @@ scenarios.put('/api/scenarios/:id', async (c) => {
       description?: string | null;
       triggerType?: ScenarioTriggerType;
       triggerTagId?: string | null;
+      onCompletionFormId?: string | null;
       isActive?: boolean;
     }>();
 
@@ -187,6 +192,7 @@ scenarios.put('/api/scenarios/:id', async (c) => {
       description: body.description,
       trigger_type: body.triggerType,
       trigger_tag_id: body.triggerTagId,
+      on_completion_form_id: body.onCompletionFormId,
       is_active: body.isActive !== undefined ? (body.isActive ? 1 : 0) : undefined,
     });
 

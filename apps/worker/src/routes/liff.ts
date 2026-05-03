@@ -20,6 +20,8 @@ import {
 import { buildIntroMessage } from '../services/intro-message.js';
 import { syncHubSpotFriend } from '../services/hubspot.js';
 import type { Env } from '../index.js';
+import { sendScenarioCompletionForm } from '../services/scenario-completion-form.js';
+import { saveLeadMetadata } from '../services/lead-metadata.js';
 
 const liffRoutes = new Hono<Env>();
 
@@ -254,6 +256,7 @@ async function applyRefAttribution(
           );
         } else {
           await completeFriendScenario(db, enrollmentRow.id);
+          await sendScenarioCompletionForm(db, c.env, friend.id, effectiveScenarioId);
         }
       }
     } catch (err) {
@@ -279,6 +282,7 @@ liffRoutes.get('/auth/line', async (c) => {
   const ref = c.req.query('ref') || '';
   const redirect = c.req.query('redirect') || '';
   const formId = c.req.query('form') || '';
+  const leadParam = c.req.query('lead') || '';
   const gclid = c.req.query('gclid') || '';
   const fbclid = c.req.query('fbclid') || '';
   const twclid = c.req.query('twclid') || '';
@@ -349,6 +353,7 @@ liffRoutes.get('/auth/line', async (c) => {
   if (liffIdMatch) liffParams.set('liffId', liffIdMatch[1]);
   if (externalRef) liffParams.set('ref', externalRef);
   if (formId) liffParams.set('form', formId);
+  if (leadParam) liffParams.set('lead', leadParam);
   const gateParam = c.req.query('gate') || '';
   if (gateParam) liffParams.set('gate', gateParam);
   const xhParam2 = c.req.query('xh') || '';
@@ -372,7 +377,7 @@ liffRoutes.get('/auth/line', async (c) => {
   // can verify against the correct gate via the correct X Harness instance.
   // Without these, the form falls back to the gateId baked into the form's
   // onSubmitWebhookUrl (which is stale when a form is reused across campaigns).
-  const state = JSON.stringify({ ref, redirect, form: formId, gate: gateParam, xh: xhParam2, gclid, fbclid, twclid, ttclid, utmSource, utmMedium, utmCampaign, account: accountParam || poolAccount, uid: uidParam, ig: igParam });
+  const state = JSON.stringify({ ref, redirect, form: formId, lead: leadParam, gate: gateParam, xh: xhParam2, gclid, fbclid, twclid, ttclid, utmSource, utmMedium, utmCampaign, account: accountParam || poolAccount, uid: uidParam, ig: igParam });
   const encodedState = btoa(state);
   const loginUrl = new URL('https://access.line.me/oauth2/v2.1/authorize');
   loginUrl.searchParams.set('response_type', 'code');
@@ -391,6 +396,7 @@ liffRoutes.get('/auth/line', async (c) => {
   if (liffIdMatch) qrParams.set('liffId', liffIdMatch[1]);
   if (externalRef) qrParams.set('ref', externalRef);
   if (formId) qrParams.set('form', formId);
+  if (leadParam) qrParams.set('lead', leadParam);
   if (gateParam) qrParams.set('gate', gateParam);
   if (xhParam2) qrParams.set('xh', xhParam2);
   if (uidParam) qrParams.set('uid', uidParam);
@@ -478,6 +484,7 @@ liffRoutes.get('/auth/oauth', async (c) => {
   const ref = c.req.query('ref') || '';
   const redirect = c.req.query('redirect') || '';
   const formId = c.req.query('form') || '';
+  const leadParam = c.req.query('lead') || '';
   const gateParam = c.req.query('gate') || '';
   const xhParam = c.req.query('xh') || '';
   const gclid = c.req.query('gclid') || '';
@@ -522,7 +529,7 @@ liffRoutes.get('/auth/oauth', async (c) => {
   // Build OAuth URL with full state
   const callbackUrl = `${baseUrl}/auth/callback`;
   const state = JSON.stringify({
-    ref, redirect, form: formId, gate: gateParam, xh: xhParam,
+    ref, redirect, form: formId, lead: leadParam, gate: gateParam, xh: xhParam,
     gclid, fbclid, twclid, ttclid,
     utmSource, utmMedium, utmCampaign,
     account: accountParam || poolAccount, uid: uidParam, ig: igParam,
@@ -553,6 +560,7 @@ liffRoutes.get('/auth/callback', async (c) => {
   let ref = '';
   let redirect = '';
   let formId = '';
+  let leadParam = '';
   let gateParam = '';
   let xhParam = '';
   let gclid = '';
@@ -570,6 +578,7 @@ liffRoutes.get('/auth/callback', async (c) => {
     ref = parsed.ref || '';
     redirect = parsed.redirect || '';
     formId = parsed.form || '';
+    leadParam = parsed.lead || '';
     gateParam = parsed.gate || '';
     xhParam = parsed.xh || '';
     gclid = parsed.gclid || '';
@@ -728,6 +737,10 @@ liffRoutes.get('/auth/callback', async (c) => {
       await linkFriendToUser(db, friend.id, userId);
     }
 
+    // LP資料請求フォームの入力内容を、LINE友だち情報のメモとして保存する。
+    // ref/scenario処理より前に保存しておくと、直後のシナリオ変数展開でも使える。
+    await saveLeadMetadata(db, friend.id, leadParam);
+
     // Attribution tracking
     // xh: refs are X Harness one-time tokens (the token IS the secret) — never persist as ref_code
     if (ref && !ref.startsWith('xh:')) {
@@ -819,7 +832,7 @@ liffRoutes.get('/auth/callback', async (c) => {
 
     // Auto-enroll in friend_add scenarios + immediate delivery (skip delivery window)
     try {
-      const { getScenarios, enrollFriendInScenario: enroll, getScenarioSteps } = await import('@line-crm/db');
+      const { getScenarios, enrollFriendInScenario: enroll, getScenarioSteps, advanceFriendScenario, completeFriendScenario } = await import('@line-crm/db');
       const { LineClient } = await import('@line-crm/line-sdk');
       const { buildMessage, expandVariables } = await import('../services/step-delivery.js');
 
@@ -854,6 +867,26 @@ liffRoutes.get('/auth/callback', async (c) => {
                 c.env.WORKER_URL,
               );
               await lineClient.pushMessage(lineUserId, [buildMessage(firstStep.message_type, expandedContent)]);
+
+              const nextStep = steps[1] ?? null;
+              if (nextStep) {
+                const nextDeliveryDate = new Date(Date.now() + 9 * 60 * 60_000);
+                nextDeliveryDate.setMinutes(nextDeliveryDate.getMinutes() + nextStep.delay_minutes);
+                const h = nextDeliveryDate.getUTCHours();
+                if (h < 9 || h >= 21) {
+                  if (h >= 21) nextDeliveryDate.setUTCDate(nextDeliveryDate.getUTCDate() + 1);
+                  nextDeliveryDate.setUTCHours(9, 0, 0, 0);
+                }
+                await advanceFriendScenario(
+                  db,
+                  enrollment.id,
+                  firstStep.step_order,
+                  nextDeliveryDate.toISOString().slice(0, -1) + '+09:00',
+                );
+              } else {
+                await completeFriendScenario(db, enrollment.id);
+                await sendScenarioCompletionForm(db, c.env, friend.id, scenario.id);
+              }
             }
           }
         }
@@ -1058,6 +1091,7 @@ liffRoutes.post('/api/liff/link', async (c) => {
       ref?: string;
       existingUuid?: string;
       ig?: string;
+      lead?: string;
     }>();
 
     if (!body.idToken) {
@@ -1096,6 +1130,8 @@ liffRoutes.post('/api/liff/link', async (c) => {
     if (!friend) {
       return c.json({ success: false, error: 'Friend not found' }, 404);
     }
+
+    await saveLeadMetadata(db, friend.id, body.lead || '');
 
     // IG cross-link: runs regardless of already-linked vs new-link branch so
     // existing friends still get ig_igsid wired when they hit this endpoint
@@ -1613,7 +1649,7 @@ async function resolveXHarnessToken(
 // Security: requires idToken to verify the caller is the actual LINE user
 liffRoutes.post('/api/liff/send-form-link', async (c) => {
   try {
-    const { lineUserId, formId, idToken, ref, gate, xh, ig } = await c.req.json<{
+    const { lineUserId, formId, idToken, ref, gate, xh, ig, lead } = await c.req.json<{
       lineUserId: string;
       formId: string;
       idToken?: string;
@@ -1621,6 +1657,7 @@ liffRoutes.post('/api/liff/send-form-link', async (c) => {
       gate?: string;
       xh?: string;
       ig?: string;
+      lead?: string;
     }>();
     if (!lineUserId || !formId) {
       return c.json({ success: false, error: 'lineUserId and formId required' }, 400);
@@ -1667,6 +1704,8 @@ liffRoutes.post('/api/liff/send-form-link', async (c) => {
     if (!friend) {
       return c.json({ success: false, error: 'Friend not found' }, 404);
     }
+
+    await saveLeadMetadata(db, friend.id, lead || '');
 
     // IG cross-link for LIFF flows that hit this endpoint (existing friends
     // tapping a reward DM URL).
