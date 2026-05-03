@@ -42,6 +42,18 @@ export class WranglerError extends Error {
     if (text.includes("d1_create_too_many_databases") || text.includes("too many databases")) {
       hints.push("D1 の無料枠を使い切っています。古い D1 を削除するか有料プランへ。");
     }
+    if (
+      text.includes("workers.dev subdomain") ||
+      text.includes("register a workers.dev subdomain")
+    ) {
+      hints.push(
+        [
+          "Cloudflare Workers の初回利用設定が未完了です。",
+          "Cloudflare Dashboard → Workers & Pages → Overview を開き、workers.dev サブドメインを1つ登録してください。",
+          "登録後、同じ `pnpm deploy:setup --env ...` を再実行すれば途中から再開できます。",
+        ].join("\n"),
+      );
+    }
 
     return hints.length > 0 ? hints.join("\n") : null;
   }

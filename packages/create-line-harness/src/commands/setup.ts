@@ -179,7 +179,10 @@ function describeAccount(
 }
 
 function defaultProjectName(envName: string): string {
-  return envName === DEFAULT_ENV ? "line-harness" : `line-harness-${envName}`;
+  if (envName === "dev" || envName === "prd") {
+    return `resortx-line-harness-${envName}`;
+  }
+  return envName === DEFAULT_ENV ? "resortx-line-harness" : `resortx-line-harness-${envName}`;
 }
 
 function productionBranchForEnv(envName: string): string {
