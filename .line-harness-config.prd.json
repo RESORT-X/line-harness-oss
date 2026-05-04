@@ -1,0 +1,14 @@
+{
+  "envName": "prd",
+  "projectName": "resortx-line-harness-prd",
+  "workerName": "resortx-line-harness-prd",
+  "workerUrl": "https://line.rav.support",
+  "adminUrl": "https://resortx-line-harness-prd-admin-0b6c10cc.pages.dev",
+  "d1DatabaseName": "resortx-line-harness-prd",
+  "d1DatabaseId": "35fa394b-c1b1-4290-b53c-f788ffdedc99",
+  "r2BucketName": "resortx-line-harness-prd-images",
+  "accountId": "f63548b5a3c67928483cd3f0355c177b",
+  "liffId": "2009828616-hb6ycKcM",
+  "botBasicId": "@864gfgcy",
+  "productionBranch": "production"
+}
