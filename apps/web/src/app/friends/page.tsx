@@ -31,7 +31,7 @@ const ccPrompts = [
 const PAGE_SIZE = 20
 
 export default function FriendsPage() {
-  const { selectedAccountId } = useAccount()
+  const { selectedAccountId, refreshAccounts } = useAccount()
   const [friends, setFriends] = useState<FriendWithTags[]>([])
   const [allTags, setAllTags] = useState<Tag[]>([])
   const [total, setTotal] = useState(0)
@@ -40,6 +40,8 @@ export default function FriendsPage() {
   const [selectedTagId, setSelectedTagId] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [syncing, setSyncing] = useState(false)
+  const [syncNotice, setSyncNotice] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null)
 
   const loadTags = useCallback(async () => {
     try {
@@ -92,9 +94,76 @@ export default function FriendsPage() {
     setSelectedTagId(tagId)
   }
 
+  const handleSyncFromLine = useCallback(async () => {
+    if (syncing) return
+
+    setSyncing(true)
+    setError('')
+    setSyncNotice({ type: 'info', text: 'LINEから友だちを同期しています...' })
+
+    let start: string | null = null
+    let created = 0
+    let updated = 0
+    let failed = 0
+    let fetched = 0
+
+    try {
+      do {
+        const res = await api.friends.syncFromLine({
+          accountId: selectedAccountId,
+          start,
+          limit: 300,
+        })
+        if (!res.success) {
+          throw new Error(res.error || '同期に失敗しました')
+        }
+
+        fetched += res.data.fetched
+        created += res.data.created
+        updated += res.data.updated
+        failed += res.data.failed
+        start = res.data.next
+
+        setSyncNotice({
+          type: 'info',
+          text: `${fetched.toLocaleString('ja-JP')}件を確認中...`,
+        })
+      } while (start)
+
+      setPage(1)
+      await Promise.all([loadFriends(), refreshAccounts()])
+      setSyncNotice({
+        type: failed > 0 ? 'error' : 'success',
+        text: `LINE同期完了: 新規${created.toLocaleString('ja-JP')}件 / 更新${updated.toLocaleString('ja-JP')}件${failed > 0 ? ` / 失敗${failed.toLocaleString('ja-JP')}件` : ''}`,
+      })
+    } catch (err) {
+      setSyncNotice({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'LINEから友だちを同期できませんでした',
+      })
+    } finally {
+      setSyncing(false)
+    }
+  }, [loadFriends, refreshAccounts, selectedAccountId, syncing])
+
   return (
     <div>
-      <Header title="友だち管理" />
+      <Header
+        title="友だち管理"
+        action={
+          <button
+            onClick={handleSyncFromLine}
+            disabled={syncing}
+            className="inline-flex items-center justify-center gap-2 px-4 py-2 min-h-[44px] text-sm font-medium text-white rounded-lg disabled:opacity-60 disabled:cursor-not-allowed transition-opacity"
+            style={{ backgroundColor: '#06C755' }}
+          >
+            {syncing && (
+              <span className="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
+            )}
+            {syncing ? '同期中...' : 'LINEから同期'}
+          </button>
+        }
+      />
 
       {/* Filters */}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3 mb-4">
@@ -120,6 +189,20 @@ export default function FriendsPage() {
       {error && (
         <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
           {error}
+        </div>
+      )}
+
+      {syncNotice && (
+        <div
+          className={`mb-4 p-4 border rounded-lg text-sm ${
+            syncNotice.type === 'success'
+              ? 'bg-green-50 border-green-200 text-green-700'
+              : syncNotice.type === 'error'
+                ? 'bg-red-50 border-red-200 text-red-700'
+                : 'bg-blue-50 border-blue-200 text-blue-700'
+          }`}
+        >
+          {syncNotice.text}
         </div>
       )}
 

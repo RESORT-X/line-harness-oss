@@ -5,6 +5,7 @@ export interface EntryRoute {
   name: string;
   tag_id: string | null;
   scenario_id: string | null;
+  form_id: string | null;
   redirect_url: string | null;
   is_active: number;
   created_at: string;
@@ -34,6 +35,7 @@ export interface CreateEntryRouteInput {
   name: string;
   tagId?: string | null;
   scenarioId?: string | null;
+  formId?: string | null;
   redirectUrl?: string | null;
   isActive?: boolean;
 }
@@ -55,6 +57,16 @@ export async function getEntryRouteByRefCode(
     .first<EntryRoute>();
 }
 
+export async function getEntryRouteById(
+  db: D1Database,
+  id: string,
+): Promise<EntryRoute | null> {
+  return db
+    .prepare(`SELECT * FROM entry_routes WHERE id = ?`)
+    .bind(id)
+    .first<EntryRoute>();
+}
+
 export async function createEntryRoute(
   db: D1Database,
   input: CreateEntryRouteInput,
@@ -66,8 +78,8 @@ export async function createEntryRoute(
   await db
     .prepare(
       `INSERT INTO entry_routes
-         (id, ref_code, name, tag_id, scenario_id, redirect_url, is_active, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, ref_code, name, tag_id, scenario_id, form_id, redirect_url, is_active, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -75,6 +87,7 @@ export async function createEntryRoute(
       input.name,
       input.tagId ?? null,
       input.scenarioId ?? null,
+      input.formId ?? null,
       input.redirectUrl ?? null,
       isActive,
       now,
@@ -101,6 +114,7 @@ export async function updateEntryRoute(
   if (input.refCode !== undefined) { fields.push('ref_code = ?'); values.push(input.refCode); }
   if (input.tagId !== undefined) { fields.push('tag_id = ?'); values.push(input.tagId ?? null); }
   if (input.scenarioId !== undefined) { fields.push('scenario_id = ?'); values.push(input.scenarioId ?? null); }
+  if (input.formId !== undefined) { fields.push('form_id = ?'); values.push(input.formId ?? null); }
   if (input.redirectUrl !== undefined) { fields.push('redirect_url = ?'); values.push(input.redirectUrl ?? null); }
   if (input.isActive !== undefined) { fields.push('is_active = ?'); values.push(input.isActive ? 1 : 0); }
 

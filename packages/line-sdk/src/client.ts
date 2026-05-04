@@ -1,6 +1,7 @@
 import type {
   BroadcastRequest,
   FlexContainer,
+  FollowersIdsResponse,
   Message,
   MulticastRequest,
   PushMessageRequest,
@@ -64,6 +65,18 @@ export class LineClient {
       `/v2/bot/profile/${encodeURIComponent(userId)}`,
     );
     return data as UserProfile;
+  }
+
+  async getFollowersIds(params: { limit?: number; start?: string } = {}): Promise<FollowersIdsResponse> {
+    const search = new URLSearchParams();
+    if (params.limit) search.set('limit', String(params.limit));
+    if (params.start) search.set('start', params.start);
+    const query = search.toString();
+    const { data } = await this.request(
+      'GET',
+      `/v2/bot/followers/ids${query ? `?${query}` : ''}`,
+    );
+    return data as FollowersIdsResponse;
   }
 
   // ─── Messaging ───────────────────────────────────────────────────────────
