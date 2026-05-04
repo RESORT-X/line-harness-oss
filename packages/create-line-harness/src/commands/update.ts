@@ -69,6 +69,21 @@ async function ensureScenarioCompletionFormColumn(databaseName: string): Promise
   }
 }
 
+async function ensureEntryRouteFormColumn(databaseName: string): Promise<void> {
+  try {
+    await wrangler([
+      "d1",
+      "execute",
+      databaseName,
+      "--remote",
+      "--command",
+      "ALTER TABLE entry_routes ADD COLUMN form_id TEXT REFERENCES forms (id) ON DELETE SET NULL",
+    ]);
+  } catch (error) {
+    if (!isBenignMigrationError(error)) throw error;
+  }
+}
+
 function assertConfig(config: HarnessConfig, repoDir: string, envName: string): void {
   const missing = [
     ["projectName", config.projectName],
@@ -142,10 +157,12 @@ export async function runUpdate(repoDir: string, envName = DEFAULT_ENV): Promise
       { cwd: join(repoDir, "packages/db") },
     );
     await ensureScenarioCompletionFormColumn(config.d1DatabaseName || projectName);
+    await ensureEntryRouteFormColumn(config.d1DatabaseName || projectName);
     s.stop("マイグレーション完了");
   } catch {
     try {
       await ensureScenarioCompletionFormColumn(config.d1DatabaseName || projectName);
+      await ensureEntryRouteFormColumn(config.d1DatabaseName || projectName);
       s.stop("マイグレーション完了");
     } catch {
       s.stop("マイグレーション完了（変更なし）");

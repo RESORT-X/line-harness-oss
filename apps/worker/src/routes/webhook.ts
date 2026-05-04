@@ -14,6 +14,7 @@ import {
   getLineAccounts,
   jstNow,
 } from '@line-crm/db';
+import type { Friend as DbFriend } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
 import { syncHubSpotFriend } from '../services/hubspot.js';
@@ -79,6 +80,57 @@ webhook.post('/webhook', async (c) => {
 
   return c.json({ status: 'ok' }, 200);
 });
+
+async function ensureFriendByLineUserId(
+  db: D1Database,
+  lineClient: LineClient,
+  lineUserId: string,
+  lineAccountId: string | null,
+): Promise<DbFriend | null> {
+  const existing = await getFriendByLineUserId(db, lineUserId);
+  if (existing) {
+    if (lineAccountId && existing.line_account_id !== lineAccountId) {
+      await db
+        .prepare('UPDATE friends SET line_account_id = ?, updated_at = ? WHERE id = ?')
+        .bind(lineAccountId, jstNow(), existing.id)
+        .run();
+      return {
+        ...existing,
+        line_account_id: lineAccountId,
+        updated_at: jstNow(),
+      };
+    }
+    return existing;
+  }
+
+  let profile;
+  try {
+    profile = await lineClient.getProfile(lineUserId);
+  } catch (err) {
+    console.error('Failed to get profile for existing friend action', lineUserId, err);
+  }
+
+  const friend = await upsertFriend(db, {
+    lineUserId,
+    displayName: profile?.displayName ?? null,
+    pictureUrl: profile?.pictureUrl ?? null,
+    statusMessage: profile?.statusMessage ?? null,
+  });
+
+  if (lineAccountId) {
+    await db
+      .prepare('UPDATE friends SET line_account_id = ?, updated_at = ? WHERE id = ?')
+      .bind(lineAccountId, jstNow(), friend.id)
+      .run();
+    return {
+      ...friend,
+      line_account_id: lineAccountId,
+      updated_at: jstNow(),
+    };
+  }
+
+  return friend;
+}
 
 async function handleEvent(
   env: Env['Bindings'],
@@ -210,7 +262,7 @@ async function handleEvent(
     const userId = event.source.type === 'user' ? event.source.userId : undefined;
     if (!userId) return;
 
-    const friend = await getFriendByLineUserId(db, userId);
+    const friend = await ensureFriendByLineUserId(db, lineClient, userId, lineAccountId);
     if (!friend) return;
 
     const postbackData = (event as unknown as { postback: { data: string } }).postback.data;
@@ -256,7 +308,7 @@ async function handleEvent(
   if (event.type === 'message' && event.message.type !== 'text') {
     const userId = event.source.type === 'user' ? event.source.userId : undefined;
     if (!userId) return;
-    const friend = await getFriendByLineUserId(db, userId);
+    const friend = await ensureFriendByLineUserId(db, lineClient, userId, lineAccountId);
     if (!friend) return;
 
     const msg = event.message as { type: string; fileName?: string; title?: string };
@@ -286,7 +338,7 @@ async function handleEvent(
       event.source.type === 'user' ? event.source.userId : undefined;
     if (!userId) return;
 
-    const friend = await getFriendByLineUserId(db, userId);
+    const friend = await ensureFriendByLineUserId(db, lineClient, userId, lineAccountId);
     if (!friend) return;
 
     const incomingText = textMessage.text;

@@ -42,6 +42,27 @@ export type BroadcastInsight = {
   fetchedAt?: string | null
 }
 
+export type EntryRoute = {
+  id: string
+  refCode: string
+  name: string
+  tagId: string | null
+  tagName: string | null
+  tagColor: string | null
+  scenarioId: string | null
+  scenarioName: string | null
+  formId: string | null
+  formName: string | null
+  isActive: boolean
+  friendCount: number
+  clickCount: number
+  latestAt: string | null
+  lineUrl: string
+  authUrl: string
+  createdAt: string
+  updatedAt: string
+}
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL
 if (!API_URL) {
   throw new Error(
@@ -70,7 +91,24 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
       ...options?.headers,
     },
   })
-  if (!res.ok) throw new Error(`API error: ${res.status}`)
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    if (text) {
+      let message = ''
+      try {
+        const body = JSON.parse(text) as { error?: unknown; message?: unknown }
+        message = typeof body.error === 'string'
+          ? body.error
+          : typeof body.message === 'string'
+            ? body.message
+            : ''
+      } catch {
+        message = text
+      }
+      if (message) throw new Error(message)
+    }
+    throw new Error(`API error: ${res.status}`)
+  }
   return res.json() as Promise<T>
 }
 
@@ -83,6 +121,16 @@ export type FriendListParams = {
 }
 
 export type FriendWithTags = Friend & { tags: Tag[] }
+export type FriendLineSyncResult = {
+  fetched: number
+  created: number
+  updated: number
+  failed: number
+  next: string | null
+  hasMore: boolean
+  accountName: string | null
+  errors: Array<{ userId: string; message: string }>
+}
 
 export const api = {
   friends: {
@@ -103,6 +151,15 @@ export const api = {
       const query = params?.accountId ? '?lineAccountId=' + params.accountId : ''
       return fetchApi<ApiResponse<{ count: number }>>('/api/friends/count' + query)
     },
+    syncFromLine: (params?: { accountId?: string | null; start?: string | null; limit?: number }) =>
+      fetchApi<ApiResponse<FriendLineSyncResult>>('/api/friends/sync-line', {
+        method: 'POST',
+        body: JSON.stringify({
+          lineAccountId: params?.accountId ?? null,
+          start: params?.start ?? null,
+          limit: params?.limit,
+        }),
+      }),
     addTag: (friendId: string, tagId: string) =>
       fetchApi<ApiResponse<null>>(`/api/friends/${friendId}/tags`, {
         method: 'POST',
@@ -322,6 +379,34 @@ export const api = {
       fetchApi<ApiResponse<{ affiliateId: string; affiliateName: string; code: string; commissionRate: number; totalClicks: number; totalConversions: number; totalRevenue: number }>>(
         `/api/affiliates/${id}/report?` + new URLSearchParams(params as Record<string, string>),
       ),
+  },
+  entryRoutes: {
+    list: (params?: { lineAccountId?: string }) => {
+      const query = params?.lineAccountId ? '?' + new URLSearchParams({ lineAccountId: params.lineAccountId }) : ''
+      return fetchApi<ApiResponse<EntryRoute[]>>('/api/entry-routes' + query)
+    },
+    create: (data: {
+      name: string
+      refCode: string
+      tagId?: string | null
+      scenarioId?: string | null
+      formId?: string | null
+      isActive?: boolean
+    }) =>
+      fetchApi<ApiResponse<EntryRoute>>('/api/entry-routes', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    update: (
+      id: string,
+      data: Partial<Pick<EntryRoute, 'name' | 'refCode' | 'tagId' | 'scenarioId' | 'formId' | 'isActive'>>
+    ) =>
+      fetchApi<ApiResponse<EntryRoute>>(`/api/entry-routes/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+    delete: (id: string) =>
+      fetchApi<ApiResponse<null>>(`/api/entry-routes/${id}`, { method: 'DELETE' }),
   },
   templates: {
     list: (category?: string) =>

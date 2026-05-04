@@ -22,6 +22,33 @@ function getRealName(friend: FriendWithTags): string {
   return typeof value === 'string' && value.trim() ? value.trim() : ''
 }
 
+function getDisplayName(friend: FriendWithTags): string {
+  return friend.displayName || '名前未取得'
+}
+
+function FriendAvatar({ friend }: { friend: FriendWithTags }) {
+  const [imageFailed, setImageFailed] = useState(false)
+  const displayName = getDisplayName(friend)
+
+  if (friend.pictureUrl && !imageFailed) {
+    return (
+      <img
+        src={friend.pictureUrl}
+        alt={displayName}
+        referrerPolicy="no-referrer"
+        onError={() => setImageFailed(true)}
+        className="w-10 h-10 rounded-full object-cover bg-gray-100 ring-1 ring-gray-200"
+      />
+    )
+  }
+
+  return (
+    <div className="w-10 h-10 rounded-full bg-gray-200 flex items-center justify-center text-gray-500 text-sm font-medium ring-1 ring-gray-200">
+      {displayName.charAt(0)}
+    </div>
+  )
+}
+
 export default function FriendTable({ friends, allTags, onRefresh }: FriendTableProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [addingTagForFriend, setAddingTagForFriend] = useState<string | null>(null)
@@ -115,6 +142,7 @@ export default function FriendTable({ friends, allTags, onRefresh }: FriendTable
               (t) => !friend.tags.some((ft) => ft.id === t.id)
             )
             const realName = getRealName(friend)
+            const displayName = getDisplayName(friend)
 
             return (
               <>
@@ -126,20 +154,10 @@ export default function FriendTable({ friends, allTags, onRefresh }: FriendTable
                   {/* Avatar + Name */}
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
-                      {friend.pictureUrl ? (
-                        <img
-                          src={friend.pictureUrl}
-                          alt={friend.displayName}
-                          className="w-9 h-9 rounded-full object-cover bg-gray-100"
-                        />
-                      ) : (
-                        <div className="w-9 h-9 rounded-full bg-gray-200 flex items-center justify-center text-gray-500 text-sm font-medium">
-                          {friend.displayName?.charAt(0) ?? '?'}
-                        </div>
-                      )}
+                      <FriendAvatar friend={friend} />
                       <div>
                         <p className="text-sm font-medium text-gray-900">
-                          {friend.displayName}
+                          {displayName}
                           {realName && <span className="ml-1 text-xs font-semibold text-gray-500">（{realName}）</span>}
                         </p>
                         {friend.statusMessage && (

@@ -1,13 +1,15 @@
 import { Hono } from 'hono';
 import {
-  getFriends,
   getFriendById,
+  getFriendByLineUserId,
   getFriendCount,
+  getLineAccountById,
   addTagToFriend,
   removeTagFromFriend,
   getFriendTags,
   getScenarios,
   enrollFriendInScenario,
+  upsertFriend,
   jstNow,
 } from '@line-crm/db';
 import type { Friend as DbFriend, Tag as DbTag } from '@line-crm/db';
@@ -16,6 +18,15 @@ import { buildMessage } from '../services/step-delivery.js';
 import type { Env } from '../index.js';
 
 const friends = new Hono<Env>();
+
+const FOLLOWERS_PAGE_LIMIT = 1000;
+const PROFILE_SYNC_CONCURRENCY = 10;
+
+type SyncLineFriendsBody = {
+  lineAccountId?: string | null;
+  start?: string | null;
+  limit?: number;
+};
 
 /** Convert a D1 snake_case Friend row to the shared camelCase shape */
 function serializeFriend(row: DbFriend) {
@@ -42,6 +53,42 @@ function serializeTag(row: DbTag) {
     color: row.color,
     createdAt: row.created_at,
   };
+}
+
+function lineSyncErrorMessage(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  if (message.includes('403') || message.includes('Access to this API is not available')) {
+    return '既存友だちの一括同期は、LINEの認証済みアカウントまたはプレミアムアカウントだけ利用できます。通常アカウントでは、新しく友だち追加された人はWebhook/LIFF経由で自動登録されます。';
+  }
+  if (message.includes('401')) {
+    return 'LINEのチャネルアクセストークンが無効です。LINEアカウント設定を確認してください。';
+  }
+  return message || 'LINEから友だちを同期できませんでした。';
+}
+
+async function syncProfile(
+  db: D1Database,
+  lineClient: InstanceType<typeof import('@line-crm/line-sdk').LineClient>,
+  userId: string,
+  lineAccountId: string | null,
+): Promise<'created' | 'updated'> {
+  const existing = await getFriendByLineUserId(db, userId);
+  const profile = await lineClient.getProfile(userId);
+  const friend = await upsertFriend(db, {
+    lineUserId: userId,
+    displayName: profile.displayName ?? null,
+    pictureUrl: profile.pictureUrl ?? null,
+    statusMessage: profile.statusMessage ?? null,
+  });
+
+  if (lineAccountId) {
+    await db
+      .prepare('UPDATE friends SET line_account_id = ?, updated_at = ? WHERE id = ?')
+      .bind(lineAccountId, jstNow(), friend.id)
+      .run();
+  }
+
+  return existing ? 'updated' : 'created';
 }
 
 // GET /api/friends - list with pagination
@@ -113,6 +160,83 @@ friends.get('/api/friends', async (c) => {
   } catch (err) {
     console.error('GET /api/friends error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// POST /api/friends/sync-line - import existing friends from LINE follower IDs
+friends.post('/api/friends/sync-line', async (c) => {
+  try {
+    const body: SyncLineFriendsBody = await c.req.json<SyncLineFriendsBody>().catch(() => ({}));
+
+    const db = c.env.DB;
+    const lineAccountId = body.lineAccountId || null;
+    const limit = Math.min(Math.max(Number(body.limit || FOLLOWERS_PAGE_LIMIT), 1), FOLLOWERS_PAGE_LIMIT);
+
+    let accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
+    let accountName: string | null = null;
+    if (lineAccountId) {
+      const account = await getLineAccountById(db, lineAccountId);
+      if (!account) {
+        return c.json({ success: false, error: 'LINE account not found' }, 404);
+      }
+      accessToken = account.channel_access_token;
+      accountName = account.name;
+    }
+
+    const { LineClient } = await import('@line-crm/line-sdk');
+    const lineClient = new LineClient(accessToken);
+    let followers;
+    try {
+      followers = await lineClient.getFollowersIds({
+        limit,
+        start: body.start || undefined,
+      });
+    } catch (err) {
+      return c.json({ success: false, error: lineSyncErrorMessage(err) }, 400);
+    }
+
+    let created = 0;
+    let updated = 0;
+    let failed = 0;
+    const errors: Array<{ userId: string; message: string }> = [];
+
+    for (let i = 0; i < followers.userIds.length; i += PROFILE_SYNC_CONCURRENCY) {
+      const chunk = followers.userIds.slice(i, i + PROFILE_SYNC_CONCURRENCY);
+      const results = await Promise.allSettled(
+        chunk.map((userId) => syncProfile(db, lineClient, userId, lineAccountId)),
+      );
+      results.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          if (result.value === 'created') created += 1;
+          else updated += 1;
+        } else {
+          failed += 1;
+          if (errors.length < 5) {
+            errors.push({
+              userId: chunk[index],
+              message: lineSyncErrorMessage(result.reason),
+            });
+          }
+        }
+      });
+    }
+
+    return c.json({
+      success: true,
+      data: {
+        fetched: followers.userIds.length,
+        created,
+        updated,
+        failed,
+        next: followers.next ?? null,
+        hasMore: Boolean(followers.next),
+        accountName,
+        errors,
+      },
+    });
+  } catch (err) {
+    console.error('POST /api/friends/sync-line error:', err);
+    return c.json({ success: false, error: lineSyncErrorMessage(err) }, 500);
   }
 });
 
