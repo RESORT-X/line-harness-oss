@@ -23,6 +23,18 @@ function clampLoadingSeconds(value: number | undefined): number {
   return Math.min(60, Math.max(5, n));
 }
 
+function parseFlexContents(content: string): Record<string, unknown> {
+  const parsed = JSON.parse(content) as unknown;
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('Flex content must be a JSON object');
+  }
+  const type = (parsed as Record<string, unknown>).type;
+  if (type !== 'bubble' && type !== 'carousel') {
+    throw new Error('Flex content type must be bubble or carousel');
+  }
+  return parsed as Record<string, unknown>;
+}
+
 async function startLoadingAnimation(
   accessToken: string,
   chatId: string,
@@ -431,7 +443,23 @@ chats.post('/api/chats/:id/send', async (c) => {
     if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
 
     const body = await c.req.json<{ messageType?: string; content: string }>();
-    if (!body.content) return c.json({ success: false, error: 'content is required' }, 400);
+    if (typeof body.content !== 'string' || !body.content.trim()) {
+      return c.json({ success: false, error: 'content is required' }, 400);
+    }
+    const messageType = body.messageType ?? 'text';
+    if (messageType !== 'text' && messageType !== 'flex') {
+      return c.json({ success: false, error: 'messageType must be text or flex' }, 400);
+    }
+
+    let flexContents: Record<string, unknown> | null = null;
+    if (messageType === 'flex') {
+      try {
+        flexContents = parseFlexContents(body.content);
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : 'invalid Flex JSON';
+        return c.json({ success: false, error: detail }, 400);
+      }
+    }
 
     const { friend, accessToken } = await resolveFriendAndAccessToken(
       c.env.DB,
@@ -443,13 +471,11 @@ chats.post('/api/chats/:id/send', async (c) => {
     // LINE APIでメッセージ送信
     const { LineClient } = await import('@line-crm/line-sdk');
     const lineClient = new LineClient(accessToken);
-    const messageType = body.messageType ?? 'text';
 
     if (messageType === 'text') {
       await lineClient.pushTextMessage(friend.line_user_id, body.content);
-    } else if (messageType === 'flex') {
-      const contents = JSON.parse(body.content);
-      await lineClient.pushFlexMessage(friend.line_user_id, extractFlexAltText(contents), contents);
+    } else {
+      await lineClient.pushFlexMessage(friend.line_user_id, extractFlexAltText(flexContents), flexContents!);
     }
 
     // メッセージログに記録

@@ -19,6 +19,18 @@ import type { Env } from '../index.js';
 
 const friends = new Hono<Env>();
 
+function parseFlexContents(content: string): Record<string, unknown> {
+  const parsed = JSON.parse(content) as unknown;
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('Flex content must be a JSON object');
+  }
+  const type = (parsed as Record<string, unknown>).type;
+  if (type !== 'bubble' && type !== 'carousel') {
+    throw new Error('Flex content type must be bubble or carousel');
+  }
+  return parsed as Record<string, unknown>;
+}
+
 const FOLLOWERS_PAGE_LIMIT = 1000;
 const PROFILE_SYNC_CONCURRENCY = 10;
 
@@ -451,8 +463,21 @@ friends.post('/api/friends/:id/messages', async (c) => {
       altText?: string;
     }>();
 
-    if (!body.content) {
+    if (typeof body.content !== 'string' || !body.content.trim()) {
       return c.json({ success: false, error: 'content is required' }, 400);
+    }
+
+    const messageType = body.messageType ?? 'text';
+    if (!['text', 'image', 'flex'].includes(messageType)) {
+      return c.json({ success: false, error: 'messageType must be text, image, or flex' }, 400);
+    }
+    if (messageType === 'flex') {
+      try {
+        parseFlexContents(body.content);
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : 'invalid Flex JSON';
+        return c.json({ success: false, error: detail }, 400);
+      }
     }
 
     const db = c.env.DB;
@@ -470,7 +495,6 @@ friends.post('/api/friends/:id/messages', async (c) => {
       if (account) accessToken = account.channel_access_token;
     }
     const lineClient = new LineClient(accessToken);
-    const messageType = body.messageType ?? 'text';
 
     // Auto-wrap URLs with tracking links (text with URLs → Flex with button)
     const { autoTrackContent } = await import('../services/auto-track.js');
