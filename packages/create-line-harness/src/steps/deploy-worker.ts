@@ -104,7 +104,7 @@ crons = ["*/5 * * * *"]
   buildSpinner.start("Worker ビルド中...");
   try {
     // Build workspace dependencies that the worker needs
-    await execa("npx", ["pnpm", "-r", "--filter", "./packages/shared", "--filter", "./packages/line-sdk", "--filter", "./packages/db", "build"], { cwd: options.repoDir });
+    await execa("pnpm", ["-r", "--filter", "./packages/shared", "--filter", "./packages/line-sdk", "--filter", "./packages/db", "build"], { cwd: options.repoDir });
     await execa("npx", ["vite", "build"], { cwd: workerDir });
     buildSpinner.stop("Worker ビルド完了");
 
