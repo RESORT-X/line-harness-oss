@@ -35,6 +35,52 @@ interface ChatDetail extends Chat {
 }
 
 type StatusFilter = 'all' | 'unread' | 'in_progress' | 'resolved'
+type ComposeMessageType = 'text' | 'flex'
+
+interface MessageTemplateItem {
+  id: string
+  name: string
+  messageContent: string
+  messageType: ComposeMessageType
+}
+
+function getFlexJsonError(content: string): string {
+  if (!content.trim()) return 'Flex JSONを入力してください。'
+
+  try {
+    const parsed = JSON.parse(content) as { type?: unknown }
+    if (!parsed || typeof parsed !== 'object' || (parsed.type !== 'bubble' && parsed.type !== 'carousel')) {
+      return 'Flex JSONのtypeは「bubble」または「carousel」にしてください。'
+    }
+    return ''
+  } catch {
+    return 'Flex JSONの形式が正しくありません。'
+  }
+}
+
+function MessageTypeSelector({ value, onChange }: {
+  value: ComposeMessageType
+  onChange: (value: ComposeMessageType) => void
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      {(['text', 'flex'] as const).map((type) => (
+        <button
+          key={type}
+          type="button"
+          onClick={() => onChange(type)}
+          className={`px-3 py-1.5 text-xs font-medium rounded-md border transition-colors ${
+            value === type
+              ? 'border-green-500 bg-green-50 text-green-700'
+              : 'border-gray-300 bg-white text-gray-600 hover:border-gray-400'
+          }`}
+        >
+          {type === 'text' ? 'テキスト' : 'Flex JSON'}
+        </button>
+      ))}
+    </div>
+  )
+}
 
 const statusConfig: Record<Chat['status'], { label: string; className: string }> = {
   unread: { label: '未読', className: 'bg-red-100 text-red-700' },
@@ -98,13 +144,15 @@ interface MessageLog {
   createdAt: string
 }
 
-function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
+function DirectMessagePanel({ friendId, friend, templates, onBack }: {
   friendId: string
   friend: FriendItem | null
+  templates: MessageTemplateItem[]
   onBack: () => void
-  onSent: () => void
 }) {
   const [message, setMessage] = useState('')
+  const [messageType, setMessageType] = useState<ComposeMessageType>('text')
+  const [sendError, setSendError] = useState('')
   const [sending, setSending] = useState(false)
   const [messages, setMessages] = useState<MessageLog[]>([])
   const [loadingMessages, setLoadingMessages] = useState(true)
@@ -127,52 +175,41 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
 
   const handleSend = async () => {
     if (!message.trim() || sending || sendLockRef.current) return
+    if (messageType === 'flex') {
+      const validationError = getFlexJsonError(message)
+      if (validationError) {
+        setSendError(validationError)
+        return
+      }
+    }
+
     sendLockRef.current = true
     setSending(true)
+    setSendError('')
+    const content = message.trim()
+    const sendingMessageType = messageType
     try {
       await fetchApi(`/api/friends/${friendId}/messages`, {
         method: 'POST',
-        body: JSON.stringify({ content: message, messageType: 'text' }),
+        body: JSON.stringify({ content, messageType: sendingMessageType }),
       })
       setMessages((prev) => [...prev, {
         id: crypto.randomUUID(),
         direction: 'outgoing',
-        messageType: 'text',
-        content: message,
+        messageType: sendingMessageType,
+        content,
         createdAt: new Date().toISOString(),
       }])
       setMessage('')
-    } catch { /* silent */ }
-    setSending(false)
-    sendLockRef.current = false
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : 'メッセージの送信に失敗しました。')
+    } finally {
+      setSending(false)
+      sendLockRef.current = false
+    }
   }
 
-  function renderContent(msg: MessageLog) {
-    if (msg.messageType === 'text') return msg.content
-    if (msg.messageType === 'flex') {
-      try {
-        const parsed = JSON.parse(msg.content)
-        // Extract ALL text from flex (up to 200 chars)
-        const texts: string[] = []
-        const collectText = (obj: Record<string, unknown>) => {
-          if (texts.join(' ').length > 200) return
-          if (obj.type === 'text' && typeof obj.text === 'string') {
-            const t = (obj.text as string).trim()
-            if (t && !t.startsWith('{{')) texts.push(t)
-          }
-          for (const key of ['header', 'body', 'footer']) {
-            if (obj[key]) collectText(obj[key] as Record<string, unknown>)
-          }
-          if (Array.isArray(obj.contents)) {
-            for (const c of obj.contents) collectText(c as Record<string, unknown>)
-          }
-        }
-        collectText(parsed)
-        return texts.slice(0, 4).join('\n') || '[Flex Message]'
-      } catch { return '[Flex Message]' }
-    }
-    return `[${msg.messageType}]`
-  }
+  const liveFlexError = messageType === 'flex' && message ? getFlexJsonError(message) : ''
 
   return (
     <div className="flex flex-col h-full">
@@ -202,13 +239,15 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
         ) : (
           messages.map((msg) => (
             <div key={msg.id} className={`flex ${msg.direction === 'outgoing' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[75%] rounded-2xl px-4 py-2 ${
-                msg.direction === 'outgoing'
-                  ? 'bg-green-500 text-white'
-                  : 'bg-gray-100 text-gray-900'
-              }`}>
-                <p className="text-sm whitespace-pre-wrap break-words">{renderContent(msg)}</p>
-                <p className={`text-xs mt-1 ${msg.direction === 'outgoing' ? 'text-green-200' : 'text-gray-400'}`}>
+              <div className={msg.messageType === 'flex'
+                ? 'max-w-[300px]'
+                : `max-w-[75%] rounded-2xl px-4 py-2 ${msg.direction === 'outgoing' ? 'bg-green-500 text-white' : 'bg-gray-100 text-gray-900'}`
+              }>
+                {msg.messageType === 'flex'
+                  ? <FlexPreviewComponent content={msg.content} maxWidth={280} />
+                  : <p className="text-sm whitespace-pre-wrap break-words">{msg.messageType === 'text' ? msg.content : `[${msg.messageType}]`}</p>
+                }
+                <p className={`text-xs mt-1 ${msg.messageType === 'flex' ? 'text-gray-400' : msg.direction === 'outgoing' ? 'text-green-200' : 'text-gray-400'}`}>
                   {new Date(msg.createdAt).toLocaleString('ja-JP', { hour: '2-digit', minute: '2-digit' })}
                 </p>
               </div>
@@ -217,14 +256,56 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
         )}
       </div>
       <div className="px-4 py-3 border-t border-gray-200">
-        <div className="flex gap-2">
-          <input
-            type="text"
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <MessageTypeSelector
+            value={messageType}
+            onChange={(type) => {
+              setMessageType(type)
+              setSendError('')
+            }}
+          />
+          {templates.length > 0 && (
+            <select
+              value=""
+              onChange={(e) => {
+                const template = templates.find((item) => item.id === e.target.value)
+                if (!template) return
+                setMessageType(template.messageType)
+                setMessage(template.messageContent)
+                setSendError('')
+              }}
+              className="border border-gray-300 rounded-md px-2 py-1.5 text-xs bg-white text-gray-600"
+            >
+              <option value="">テンプレートから選択...</option>
+              {templates.map((template) => (
+                <option key={template.id} value={template.id}>
+                  [{template.messageType === 'flex' ? 'Flex' : 'テキスト'}] {template.name}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+        {messageType === 'flex' && message && !liveFlexError && (
+          <div className="mb-3 rounded-lg bg-gray-50 p-3 overflow-x-auto">
+            <p className="text-xs font-medium text-gray-500 mb-2">送信プレビュー</p>
+            <FlexPreviewComponent content={message} maxWidth={280} />
+          </div>
+        )}
+        {(sendError || liveFlexError) && (
+          <p className="mb-2 text-xs text-red-600">{sendError || liveFlexError}</p>
+        )}
+        <div className="flex items-end gap-2">
+          <textarea
+            rows={messageType === 'flex' ? 6 : 2}
             value={message}
-            onChange={(e) => setMessage(e.target.value)}
+            onChange={(e) => {
+              setMessage(e.target.value)
+              setSendError('')
+            }}
             onCompositionStart={() => { isComposingRef.current = true }}
             onCompositionEnd={() => { isComposingRef.current = false }}
             onKeyDown={(e) => {
+              if (messageType === 'flex') return
               // IME変換確定のEnterでは送信しない
               if (e.nativeEvent.isComposing || isComposingRef.current || e.keyCode === 229) return
               if (e.key === 'Enter' && !e.shiftKey) {
@@ -232,12 +313,12 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
                 handleSend()
               }
             }}
-            placeholder="メッセージを入力..."
-            className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+            placeholder={messageType === 'flex' ? '{"type":"bubble","body":{...}}' : 'メッセージを入力...'}
+            className={`flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent resize-y ${messageType === 'flex' ? 'font-mono' : ''}`}
           />
           <button
             onClick={handleSend}
-            disabled={!message.trim() || sending}
+            disabled={!message.trim() || sending || Boolean(liveFlexError)}
             className="px-4 py-2 rounded-lg text-white text-sm font-medium disabled:opacity-50"
             style={{ backgroundColor: '#06C755' }}
           >
@@ -264,10 +345,14 @@ export default function ChatsPage() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [error, setError] = useState('')
   const [messageContent, setMessageContent] = useState('')
+  const [messageType, setMessageType] = useState<ComposeMessageType>('text')
+  const [messageError, setMessageError] = useState('')
   const [sending, setSending] = useState(false)
   const sendLockRef = useRef(false)
   const [notes, setNotes] = useState('')
   const [savingNotes, setSavingNotes] = useState(false)
+  const [templates, setTemplates] = useState<MessageTemplateItem[]>([])
+  const [showTemplateMenu, setShowTemplateMenu] = useState(false)
   const [showLoadingIndicator, setShowLoadingIndicator] = useState(false)
   const [loadingSeconds, setLoadingSeconds] = useState(5)
   const lastLoadingTriggerAtRef = useRef<Record<string, number>>({})
@@ -363,6 +448,30 @@ export default function ChatsPage() {
   }, [loadChats])
 
   useEffect(() => {
+    const loadTemplates = async () => {
+      const [libraryResult, deliveryResult] = await Promise.allSettled([
+        api.templates.list(),
+        fetchApi<{ success: boolean; data: { messageType: string; id: string; name: string; messageContent: string }[] }>('/api/message-templates'),
+      ])
+
+      const libraryTemplates = libraryResult.status === 'fulfilled' && libraryResult.value.success
+        ? (libraryResult.value.data as unknown as { messageType: string; id: string; name: string; messageContent: string }[])
+            .filter((template): template is MessageTemplateItem => template.messageType === 'text' || template.messageType === 'flex')
+            .map((template) => ({ ...template, id: `library:${template.id}`, name: `テンプレート｜${template.name}` }))
+        : []
+      const deliveryTemplates = deliveryResult.status === 'fulfilled' && deliveryResult.value.success
+        ? deliveryResult.value.data
+            .filter((template): template is MessageTemplateItem => template.messageType === 'text' || template.messageType === 'flex')
+            .map((template) => ({ ...template, id: `delivery:${template.id}`, name: `配信テンプレート｜${template.name}` }))
+        : []
+
+      setTemplates([...libraryTemplates, ...deliveryTemplates])
+    }
+
+    void loadTemplates()
+  }, [])
+
+  useEffect(() => {
     if (selectedChatId) {
       loadChatDetail(selectedChatId)
     } else {
@@ -402,6 +511,9 @@ export default function ChatsPage() {
   const handleSelectChat = (chatId: string) => {
     setSelectedChatId(chatId)
     setMessageContent('')
+    setMessageType('text')
+    setMessageError('')
+    setShowTemplateMenu(false)
   }
 
   const triggerLoadingAnimation = useCallback(async (chatId: string) => {
@@ -425,12 +537,22 @@ export default function ChatsPage() {
 
   const handleSendMessage = async () => {
     if (!selectedChatId || !messageContent.trim() || sending || sendLockRef.current) return
+    if (messageType === 'flex') {
+      const validationError = getFlexJsonError(messageContent)
+      if (validationError) {
+        setMessageError(validationError)
+        return
+      }
+    }
+
     const content = messageContent.trim()
+    const sendingMessageType = messageType
     const sendingChatId = selectedChatId  // capture the chat id for this send
     sendLockRef.current = true
     setSending(true)
+    setMessageError('')
     try {
-      await api.chats.send(sendingChatId, { content })
+      await api.chats.send(sendingChatId, { content, messageType: sendingMessageType })
       setMessageContent('')
       // Optimistic update: append message locally instead of refetching (prevents scroll jump / full reload feel)
       const now = new Date().toISOString()
@@ -444,7 +566,7 @@ export default function ChatsPage() {
           {
             id: crypto.randomUUID(),
             direction: 'outgoing',
-            messageType: 'text',
+            messageType: sendingMessageType,
             content,
             createdAt: now,
           },
@@ -468,8 +590,8 @@ export default function ChatsPage() {
           return bt - at
         })
       })
-    } catch {
-      setError('メッセージの送信に失敗しました。')
+    } catch (err) {
+      setMessageError(err instanceof Error ? err.message : 'メッセージの送信に失敗しました。')
     } finally {
       setSending(false)
       sendLockRef.current = false
@@ -501,6 +623,8 @@ export default function ChatsPage() {
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    // Flex JSONは複数行編集するため、Enterキーでは送信しない
+    if (messageType === 'flex') return
     // IME変換確定のEnterでは送信しない
     if (e.nativeEvent.isComposing || isComposingRef.current || e.keyCode === 229) return
     if (e.key !== 'Enter') return
@@ -512,6 +636,8 @@ export default function ChatsPage() {
       handleSendMessage()
     }
   }
+
+  const liveFlexError = messageType === 'flex' && messageContent ? getFlexJsonError(messageContent) : ''
 
   return (
     <div>
@@ -605,8 +731,8 @@ export default function ChatsPage() {
             <DirectMessagePanel
               friendId={selectedFriendId}
               friend={allFriends.find((f) => f.id === selectedFriendId) || null}
+              templates={templates}
               onBack={() => setSelectedFriendId(null)}
-              onSent={() => { setSelectedFriendId(null); loadChats(); }}
             />
           ) : !selectedChatId ? (
             <div className="flex-1 flex items-center justify-center">
@@ -763,6 +889,13 @@ export default function ChatsPage() {
               {/* Send Message Form */}
               <div className="px-4 py-3 border-t border-gray-200">
                 <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-gray-600">
+                  <MessageTypeSelector
+                    value={messageType}
+                    onChange={(type) => {
+                      setMessageType(type)
+                      setMessageError('')
+                    }}
+                  />
                   <label className="inline-flex items-center gap-2 cursor-pointer select-none">
                     <input
                       type="checkbox"
@@ -782,34 +915,83 @@ export default function ChatsPage() {
                       <option key={sec} value={sec}>{sec}秒</option>
                     ))}
                   </select>
-                  <span className="text-gray-500">送信キー:</span>
-                  <label className="flex items-center gap-1 cursor-pointer">
-                    <input
-                      type="radio"
-                      checked={sendMode === 'enter'}
-                      onChange={() => setSendMode('enter')}
-                      className="accent-green-600"
-                    />
-                    <span>Enter</span>
-                  </label>
-                  <label className="flex items-center gap-1 cursor-pointer">
-                    <input
-                      type="radio"
-                      checked={sendMode === 'shift-enter'}
-                      onChange={() => setSendMode('shift-enter')}
-                      className="accent-green-600"
-                    />
-                    <span>Shift+Enter</span>
-                  </label>
+                  {messageType === 'text' && (
+                    <>
+                      <span className="text-gray-500">送信キー:</span>
+                      <label className="flex items-center gap-1 cursor-pointer">
+                        <input
+                          type="radio"
+                          checked={sendMode === 'enter'}
+                          onChange={() => setSendMode('enter')}
+                          className="accent-green-600"
+                        />
+                        <span>Enter</span>
+                      </label>
+                      <label className="flex items-center gap-1 cursor-pointer">
+                        <input
+                          type="radio"
+                          checked={sendMode === 'shift-enter'}
+                          onChange={() => setSendMode('shift-enter')}
+                          className="accent-green-600"
+                        />
+                        <span>Shift+Enter</span>
+                      </label>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShowTemplateMenu((current) => !current)}
+                    className="px-2 py-1 text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-md border border-blue-200 transition-colors"
+                  >
+                    📋 テンプレート
+                  </button>
                 </div>
+                {showTemplateMenu && (
+                  <div className="mb-2 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                    <div className="px-3 py-2 border-b border-gray-100 flex items-center justify-between">
+                      <span className="text-xs font-semibold text-gray-600">テンプレート</span>
+                      <button type="button" onClick={() => setShowTemplateMenu(false)} className="text-xs text-gray-400 hover:text-gray-600">
+                        閉じる
+                      </button>
+                    </div>
+                    {templates.length === 0 ? (
+                      <p className="px-3 py-3 text-xs text-gray-400">利用できるテンプレートがありません。</p>
+                    ) : templates.map((template) => (
+                      <button
+                        type="button"
+                        key={template.id}
+                        onClick={() => {
+                          setMessageType(template.messageType)
+                          setMessageContent(template.messageContent)
+                          setMessageError('')
+                          setShowTemplateMenu(false)
+                        }}
+                        className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 border-b border-gray-50 last:border-0 truncate"
+                      >
+                        <span className="mr-2 text-xs text-gray-400">[{template.messageType === 'flex' ? 'Flex' : 'テキスト'}]</span>
+                        {template.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {messageType === 'flex' && messageContent && !liveFlexError && (
+                  <div className="mb-3 rounded-lg bg-gray-50 p-3 overflow-x-auto">
+                    <p className="text-xs font-medium text-gray-500 mb-2">送信プレビュー</p>
+                    <FlexPreviewComponent content={messageContent} maxWidth={300} />
+                  </div>
+                )}
+                {(messageError || liveFlexError) && (
+                  <p className="mb-2 text-xs text-red-600">{messageError || liveFlexError}</p>
+                )}
                 <div className="flex items-end gap-2">
                   <textarea
-                    rows={2}
+                    rows={messageType === 'flex' ? 7 : 2}
                     value={messageContent}
                     onChange={(e) => {
                       const value = e.target.value
                       setMessageContent(value)
-                      if (selectedChatId && isMessageInputFocused && value.trim()) {
+                      setMessageError('')
+                      if (messageType === 'text' && selectedChatId && isMessageInputFocused && value.trim()) {
                         void triggerLoadingAnimation(selectedChatId)
                       }
                     }}
@@ -817,18 +999,18 @@ export default function ChatsPage() {
                     onCompositionEnd={() => { isComposingRef.current = false }}
                     onFocus={() => {
                       setIsMessageInputFocused(true)
-                      if (selectedChatId) {
+                      if (messageType === 'text' && selectedChatId) {
                         void triggerLoadingAnimation(selectedChatId)
                       }
                     }}
                     onBlur={() => setIsMessageInputFocused(false)}
                     onKeyDown={handleKeyDown}
-                    placeholder="メッセージを入力..."
-                    className="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-green-500 resize-none"
+                    placeholder={messageType === 'flex' ? '{"type":"bubble","body":{...}}' : 'メッセージを入力...'}
+                    className={`flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-green-500 resize-y ${messageType === 'flex' ? 'font-mono' : ''}`}
                   />
                   <button
                     onClick={handleSendMessage}
-                    disabled={sending || !messageContent.trim()}
+                    disabled={sending || !messageContent.trim() || Boolean(liveFlexError)}
                     className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
                     style={{ backgroundColor: '#06C755' }}
                   >
